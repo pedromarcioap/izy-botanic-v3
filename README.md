@@ -1,148 +1,100 @@
-# 🌿 Izy Botanic: Sua Assistente Pessoal para Cuidado de Plantas
+# Izy Botanic - Assistente Pessoal de Cuidados com Plantas
 
-![Izy Botanic Dashboard](https://i.imgur.com/example-image.png) <!--- Placeholder para uma captura de tela do painel do aplicativo -->
+Bem-vindo ao Izy Botanic, seu assistente inteligente para jardinagem. Esta aplicação foi projetada para ajudar entusiastas de plantas, desde iniciantes a experientes, a cuidar de seu jardim com a ajuda da inteligência artificial.
 
-**Izy Botanic** é uma aplicação web inteligente, potencializada por IA, projetada para ajudar amantes de plantas de todos os níveis a cuidar de suas companheiras verdes. Utilizando o poder da API Gemini do Google, a Izy oferece identificação instantânea de plantas, diagnósticos de saúde, cronogramas de cuidado personalizados e conselhos de especialistas, tudo dentro de uma interface bonita e intuitiva.
+## 🌿 Funcionalidades Principais
 
-O projeto é construído com uma filosofia **serverless e focada na privacidade**. Todos os seus dados, desde as plantas até o histórico de conversas, são armazenados de forma segura no `localStorage` do seu navegador, garantindo que você tenha controle total e acesso offline.
+Izy Botanic oferece um conjunto completo de ferramentas para gerenciar e entender as necessidades de suas plantas:
 
----
+- **Autenticação de Usuários**: Sistema de cadastro e login para gerenciar múltiplos usuários de forma independente.
+- **Dashboard Central**: Uma visão geral do seu jardim, com um resumo de alertas de cuidados, dicas sazonais e um menu de acesso rápido às principais funcionalidades.
+- **Análise de Plantas com IA**:
+    - **Identificação de Espécies**: Envie uma foto da sua planta, e a IA (Google Gemini) a identificará, fornecendo o nome popular e científico.
+    - **Diagnóstico de Saúde**: A IA analisa a saúde da planta, identificando problemas como estresse hídrico, deficiências nutricionais ou pragas.
+    - **Plano de Cuidados Personalizado**: Receba instruções detalhadas sobre rega, luz solar, tipo de solo e fertilização, além de um cronograma de cuidados para criar alertas.
+- **Meu Jardim**:
+    - **Visualização de Plantas**: Todas as suas plantas adicionadas são exibidas em um formato de galeria.
+    - **Página de Detalhes da Planta**: Uma visão completa de cada planta, incluindo seu diagnóstico, cronograma de cuidados, tarefas personalizadas e um diário de anotações.
+- **Calendário de Cuidados**: Uma agenda para os próximos 7 dias que mostra todas as tarefas de cuidado pendentes (rega, adubação e tarefas personalizadas), permitindo que você marque-as como concluídas.
+- **Especialista AI (Chatbot)**: Converse com a Izy, uma especialista em botânica com IA, para tirar dúvidas sobre jardinagem, como "qual a melhor época para podar minhas rosas?".
+- **Recomendações Inteligentes**: Com base nas plantas que você já possui, a IA sugere novas espécies que se adaptariam bem ao seu jardim.
+- **Sistema de Conquistas**: Desbloqueie conquistas ao atingir marcos, como adicionar sua primeira planta ou manter um jardim saudável.
+- **Gerenciamento de Tarefas**:
+    - **Tarefas Principais**: Edite a frequência de rega e adubação.
+    - **Tarefas Adicionais**: Crie, edite e remova tarefas personalizadas (ex: poda, verificação de pragas, limpeza de folhas) com frequências específicas.
 
-## ✨ Funcionalidades em Detalhe
+## 🏗️ Arquitetura e Tecnologias
 
-### 📸 Análise de Plantas com IA Vision
--   **Identificação Instantânea:** Tire uma foto da sua planta e faça o upload. A IA Vision do `gemini-2.5-flash` analisa as características visuais (formato da folha, venação, cor) para identificar a espécie.
--   **Nível de Confiança e Alternativas:** A IA fornece um nível de confiança ('Alta', 'Média', 'Baixa') na identificação. Se a confiança não for alta, sugere espécies alternativas com explicações, ajudando a garantir a identificação correta.
--   **Diagnóstico de Saúde:** A análise vai além da identificação, avaliando se a planta parece saudável e detectando sinais visuais de problemas como pragas, doenças ou estresse nutricional.
+Izy Botanic é uma **Aplicação de Página Única (SPA)** construída inteiramente no lado do cliente (client-side).
 
-### 🩺 Suíte de Saúde Completa
--   **Diagnóstico Detalhado:** Receba um relatório abrangente sobre a condição da sua planta, incluindo um título de diagnóstico (ex: "Sinais de Excesso de Água") e uma descrição detalhada.
--   **Análise de Pragas e Doenças:** Se um problema for detectado, a IA fornece uma análise específica, incluindo o nome do problema, descrição e um plano de tratamento sugerido.
--   **Plano de Cuidados Essenciais:** Com base na espécie identificada, a IA gera instruções claras e concisas para rega, luz solar, tipo de solo e fertilização.
+- **Framework**: **React 19** com **TypeScript**.
+- **Gerenciamento de Estado**: **React Context API** é utilizado para gerenciar o estado global da aplicação de forma centralizada (`AppContext`).
+- **Roteamento**: **React Router** (`HashRouter`) gerencia a navegação entre as diferentes páginas.
+- **Persistência de Dados**: **`localStorage`** é usado para armazenar todos os dados do usuário, incluindo perfis, plantas, histórico e configurações. **Esta abordagem não é segura para produção** e serve apenas para fins de demonstração.
+- **Inteligência Artificial**: **Google Gemini (gemini-2.5-flash)** através do SDK `@google/genai`. A IA é usada para:
+    1.  `analyzePlantImage`: Analisar uma imagem e retornar um JSON estruturado com o diagnóstico.
+    2.  `getPlantRecommendations`: Sugerir novas plantas com base no jardim atual.
+    3.  `getExpertAnswer`: Potencializar o chatbot especialista.
+- **Estilização**: **TailwindCSS** (inferido pela sintaxe das classes nos componentes) para uma UI moderna e responsiva.
+- **Build Tool**: **Vite** para desenvolvimento e build rápidos.
 
-### 📅 Hub de Cuidados Dinâmico
--   **Cronogramas Personalizados:** Receba automaticamente cronogramas de rega e adubação com base nas necessidades específicas da sua planta.
--   **Alertas e Calendário:** O aplicativo gera alertas para tarefas pendentes e exibe um calendário de 7 dias com todas as atividades de cuidado, garantindo que você nunca perca uma tarefa importante.
--   **Tarefas Personalizadas:** Vá além do básico. Adicione, edite e acompanhe tarefas personalizadas como `Poda`, `Borrifar Folhas`, `Transplante` ou `Verificar Pragas`, com ícones e frequências customizáveis.
+## 🚀 Como Executar Localmente
 
-### 💬 Converse com uma Especialista IA
--   **Conselhos Sob Demanda:** Tem uma pergunta específica? Converse com a "Izy", nossa botânica IA amigável, configurada com uma instrução de sistema para ser uma especialista prestativa.
--   **Contexto de Conversa:** A IA lembra o histórico da sua conversa, permitindo perguntas de acompanhamento e um diálogo natural e coeso.
--   **Respostas Abrangentes:** Pergunte sobre qualquer tópico relacionado a plantas, desde os melhores tipos de solo e fertilizantes até o controle de pragas orgânico e técnicas de poda.
+Para executar o Izy Botanic em seu ambiente local, siga estes passos:
 
-### 🌱 Recomendações Inteligentes
--   **Expanda seu Jardim com Confiança:** Com base na lista de plantas que você já possui, a IA da Izy sugere novas plantas que provavelmente prosperariam em condições de cuidado semelhantes.
--   **Justificativas Claras:** Cada recomendação vem com um motivo, explicando por que a nova planta seria uma boa adição à sua coleção.
+**Pré-requisitos:**
+- [Node.js](https://nodejs.org/) (versão 18 ou superior)
+- [npm](https://www.npmjs.com/) (geralmente instalado com o Node.js)
 
-### 📔 Diário Digital da Planta
--   **Acompanhe o Progresso:** Mantenha um diário detalhado para cada planta. Adicione notas escritas e fotos para registrar seu crescimento, floração e saúde ao longo do tempo.
--   **Histórico Visual:** O diário cria uma linha do tempo visual e textual, ajudando você a entender melhor a evolução de cada planta.
+**1. Clone o Repositório**
+```bash
+git clone <URL_DO_REPOSITORIO>
+cd <NOME_DO_DIRETORIO>
+```
 
-### 🏆 Gamificação e Conquistas
--   **Mantenha-se Motivado:** Desbloqueie conquistas por marcos importantes, como adicionar sua primeira planta, cuidar de uma planta doente até sua recuperação ou manter um jardim com 5 plantas saudáveis.
+**2. Instale as Dependências**
+```bash
+npm install
+```
 
----
+**3. Configure a API Key do Google Gemini**
 
-## 🛠️ Tecnologias e Dependências
+A aplicação depende da API do Google Gemini para suas funcionalidades de IA.
 
-Este projeto utiliza uma abordagem moderna e sem etapa de compilação (`buildless`), carregando dependências diretamente no navegador através de `importmap`.
+- Obtenha uma API Key no [Google AI Studio](https://aistudio.google.com/app/apikey).
+- Crie um arquivo `.env` na raiz do projeto.
+- Adicione sua chave ao arquivo da seguinte forma:
 
--   **Frontend:** [React](https://reactjs.org/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/)
--   **Motor de IA:** [Google Gemini API](https://ai.google.dev/) (modelo `gemini-2.5-flash`)
--   **Gerenciamento de Dependências (via `importmap` a partir do CDN esm.sh):**
-    -   `react` & `react-dom`
-    -   `react-router-dom`
-    -   `@google/genai`
--   **Roteamento:** [React Router](https://reactrouter.com/)
--   **Ícones:** Um conjunto de ícones SVG personalizados e otimizados.
+```
+VITE_API_KEY="SUA_API_KEY_AQUI"
+```
 
----
+> **Nota**: O prefixo `VITE_` é obrigatório para que o Vite exponha a variável de ambiente para o código do cliente.
 
-## 🚀 Como Começar (Desenvolvimento Local)
+**4. Inicie o Servidor de Desenvolvimento**
+```bash
+npm run dev
+```
+A aplicação estará disponível em `http://localhost:5173` (ou outra porta, se a 5173 estiver em uso).
 
-Siga estas instruções para obter uma cópia local funcionando para desenvolvimento e testes.
+## 🔐 Segurança e Considerações
 
-### Pré-requisitos
+- **Persistência de Dados via `localStorage`**:
+    - **Inseguro**: `localStorage` é acessível via JavaScript, o que o torna vulnerável a ataques de Cross-Site Scripting (XSS). Em um ambiente de produção, informações sensíveis como senhas (mesmo hasheadas) e dados do usuário nunca devem ser armazenadas dessa forma.
+    - **Solução Recomendada**: Para uma aplicação real, seria necessário um **backend dedicado** com um banco de dados seguro (ex: PostgreSQL, MongoDB). A autenticação seria gerenciada por tokens (ex: JWT) armazenados de forma segura (ex: cookies `HttpOnly`).
 
--   Um navegador web moderno (Chrome, Firefox, Safari, Edge).
--   Uma chave de API do Google Gemini. Você pode obter uma no [Google AI Studio](https://aistudio.google.com/app/apikey).
--   Git instalado na sua máquina.
--   (Opcional, mas recomendado) Python 3 ou Node.js para executar um servidor local.
+- **Gerenciamento de Senhas**:
+    - A aplicação utiliza `crypto.subtle.digest('SHA-256', ...)` para fazer o hash da senha no cliente. Embora seja melhor que armazenar em texto plano, **isso ainda é inseguro**. O hash deve ser computado no backend, e um algoritmo mais robusto como **bcrypt** deve ser usado.
 
-### Instalação e Configuração
+## 🔌 Utilização da API (Google Gemini)
 
-1.  **Clone o Repositório:**
-    ```bash
-    git clone https://github.com/pedromarcioap/izy-botanic.git
-    cd izy-botanic
-    ```
+A interação com a API do Google Gemini é central para a aplicação e está encapsulada no arquivo `services/geminiService.ts`.
 
-2.  **Configure as Variáveis de Ambiente:**
-    O aplicativo requer uma chave de API do Google Gemini para funcionar. A aplicação espera que esta chave esteja disponível em `process.env.API_KEY`.
+- **Modo Mock (API Key Ausente)**: Se a variável de ambiente `VITE_API_KEY` não for fornecida, o serviço opera em um **modo de mock**. Em vez de fazer chamadas reais à API, ele retorna dados estáticos (`mockAnalysis`, `mockRecommendations`, etc.) após um breve `setTimeout`. Isso permite o desenvolvimento e teste da UI sem consumir cotas da API.
 
-    Para desenvolvimento local, você pode simular isso editando o arquivo `index.html`. Encontre a seção `<head>` e adicione a seguinte tag de script **antes** do script `importmap`:
+- **Schemas de Resposta**: Para garantir que a IA retorne dados consistentes e previsíveis, a aplicação define esquemas JSON rigorosos (`plantAnalysisSchema`, `recommendationSchema`) que são enviados junto com as requisições. O Gemini é instruído a formatar sua resposta estritamente de acordo com esses esquemas.
 
-    ```html
-    <script>
-      // AVISO: Apenas para desenvolvimento local. Não envie sua chave de API para o repositório.
-      window.process = {
-        env: {
-          API_KEY: 'SUA_CHAVE_DE_API_GEMINI_AQUI'
-        }
-      };
-    </script>
-    ```
-    Substitua `SUA_CHAVE_DE_API_GEMINI_AQUI` pela sua chave real.
-
-3.  **Execute a Aplicação:**
-    Como esta é uma aplicação puramente do lado do cliente e sem etapa de compilação, você pode simplesmente abrir o arquivo `index.html` no seu navegador. No entanto, para a melhor experiência e para evitar possíveis problemas de CORS com arquivos locais, é recomendado usar um servidor local simples.
-
-    **Comandos para iniciar um servidor local:**
-
-    -   Se você tem Python 3 instalado (geralmente vem com Linux e macOS):
-        ```bash
-        python3 -m http.server
-        ```
-    -   Se você tem Node.js instalado, pode usar o pacote `live-server`:
-        ```bash
-        npx live-server
-        ```
-
-    Após iniciar o servidor, navegue para `http://localhost:8000` (ou o endereço fornecido pelo seu servidor) no seu navegador.
-
----
-
-## 🤝 Contribuindo
-
-Contribuições são o que tornam a comunidade de código aberto um lugar incrível para aprender, inspirar e criar. Qualquer contribuição que você fizer será **muito bem-vinda**.
-
-1.  **Faça um Fork do Projeto:** Clique no botão 'Fork' no canto superior direito desta página.
-2.  **Crie sua Branch de Funcionalidade:**
-    ```bash
-    git checkout -b feature/NovaFuncionalidadeIncrivel
-    ```
-3.  **Faça o Commit de suas Mudanças:**
-    ```bash
-    git commit -m 'Adiciona NovaFuncionalidadeIncrivel'
-    ```
-4.  **Faça o Push para a Branch:**
-    ```bash
-    git push origin feature/NovaFuncionalidadeIncrivel
-    ```
-5.  **Abra um Pull Request:** Vá para a aba "Pull requests" do repositório original e abra um novo pull request. Por favor, forneça uma descrição clara das mudanças.
-
-Nós valorizamos código limpo, legível e bem documentado. Por favor, garanta que suas contribuições sigam o estilo de código existente.
-
----
-
-## 📜 Licença
-
-Distribuído sob a Licença MIT. Veja `LICENSE` para mais informações.
-
----
-
-## 💬 Contato
-
-Seu Nome / Link do Projeto – [@seu_twitter](https://twitter.com/seu_twitter) – email@exemplo.com
-
-Link do Projeto: [https://github.com/your-username/izy-botanic](https://github.com/your-username/izy-botanic)
+- **Funções Principais**:
+    - `analyzePlantImage`: Envia a imagem da planta (em formato base64) e um prompt detalhado solicitando a análise.
+    - `getPlantRecommendations`: Envia uma lista de nomes de plantas do usuário e pede por três novas recomendações.
+    - `getExpertAnswer`: Mantém o histórico da conversa para fornecer respostas contextuais no chat com o especialista.
