@@ -44,6 +44,26 @@ const hashPassword = (password: string): string => {
 
 // --- CONFIG ---
 
+const POINTS_CONFIG = {
+    COMPLETE_TASK: 10,
+    ADD_PLANT: 50,
+    ADD_HISTORY: 15,
+    ACTIVATE_PLAN: 25,
+};
+
+const POINTS_PER_LEVEL = 100;
+const LEVELS = [
+    "Jardineiro Novato", // Nível 1
+    "Cultivador Dedicado", // Nível 2
+    "Polegar Verde", // Nível 3
+    "Amigo das Plantas", // Nível 4
+    "Sussurrador de Folhas", // Nível 5
+    "Guardião da Flora", // Nível 6
+    "Mestre Botânico" // Nível 7+
+];
+
+const getLevelName = (level: number) => LEVELS[Math.min(level - 1, LEVELS.length - 1)];
+
 const PREDEFINED_TASKS_CONFIG: Record<PredefinedTaskType, { label: string, icon: React.FC<{className?: string}>, color: string }> = {
     'prune': { label: 'Poda', icon: ScissorsIcon, color: 'text-orange-600' },
     'mist': { label: 'Borrifar Folhas', icon: SprayIcon, color: 'text-cyan-600' },
@@ -127,6 +147,28 @@ const getInitialAppData = (): Omit<UserAppData, 'userProfile'> => ({
     ],
 });
 
+// A pure function to calculate the new state of achievements.
+const getUpdatedAchievements = (
+    currentAchievements: Set<string>,
+    updatedPlants: Plant[],
+    flags: { newHistoryNote?: boolean } = {}
+): Set<string> => {
+    const newAchievements = new Set(currentAchievements);
+
+    const checkAndAdd = (id: Achievement['id'], condition: boolean) => {
+        if (!newAchievements.has(id) && condition) {
+            newAchievements.add(id);
+        }
+    };
+
+    checkAndAdd('FIRST_PLANT', updatedPlants.length >= 1);
+    checkAndAdd('GARDEN_STARTER', updatedPlants.length >= 5);
+    checkAndAdd('FIRST_DIARY_NOTE', !!flags.newHistoryNote);
+    checkAndAdd('GREEN_THUMB', updatedPlants.filter(p => p.analysis.isHealthy).length >= 5);
+
+    return newAchievements;
+};
+
 // --- CONTEXT ---
 const AppContext = React.createContext<import('./types').AppContextType | null>(null);
 
@@ -134,13 +176,13 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!localStorage.getItem('izyBotanic-currentUser'));
     const [currentUser, setCurrentUser] = useState<string | null>(() => localStorage.getItem('izyBotanic-currentUser'));
     
-    // Lazily initialize appData from localStorage
     const [appData, setAppData] = useState<UserAppData>(() => {
         const user = localStorage.getItem('izyBotanic-currentUser');
         if (user) {
             const savedData = localStorage.getItem(`izyBotanic-appData-${user}`);
             const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
-            const userProfile = users[user] ? { name: users[user].name } : null;
+            const userData = users[user];
+            const userProfile: UserProfile | null = userData ? { name: userData.name, growthPoints: userData.growthPoints || 0, level: userData.level || 1 } : null;
 
             if (savedData) {
                 const parsedData = JSON.parse(savedData);
@@ -156,45 +198,45 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     });
     
     const [isExpertLoading, setIsExpertLoading] = useState(false);
-
+    
+    const userProfile = useMemo(() => appData.userProfile, [appData.userProfile]);
+    
     // Persist user data on change
     useEffect(() => {
         if (currentUser && appData) {
             const dataToSave = {
                 ...appData,
-                unlockedAchievements: Array.from(appData.unlockedAchievements)
+                unlockedAchievements: Array.from(appData.unlockedAchievements),
+                userProfile: undefined, // Don't save profile in app data blob
             };
             localStorage.setItem(`izyBotanic-appData-${currentUser}`, JSON.stringify(dataToSave));
+            
+            // Save user profile data separately in the users blob
+            const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
+            if (users[currentUser] && appData.userProfile) {
+                users[currentUser] = { ...users[currentUser], ...appData.userProfile };
+                localStorage.setItem('izyBotanic-users', JSON.stringify(users));
+            }
         }
     }, [appData, currentUser]);
     
-    const unlockAchievement = useCallback((id: Achievement['id']) => {
+    const addGrowthPoints = useCallback((points: number) => {
         setAppData(prev => {
-            if (prev.unlockedAchievements.has(id)) return prev;
-            const newSet = new Set(prev.unlockedAchievements);
-            newSet.add(id);
-            // You can add a toast notification here to inform the user
-            return { ...prev, unlockedAchievements: newSet };
+            if (!prev.userProfile) return prev;
+            const newPoints = prev.userProfile.growthPoints + points;
+            const newLevel = Math.floor(newPoints / POINTS_PER_LEVEL) + 1;
+            const updatedProfile = { ...prev.userProfile, growthPoints: newPoints, level: newLevel };
+            return { ...prev, userProfile: updatedProfile };
         });
     }, []);
 
-    const checkAchievements = useCallback((updatedPlants: Plant[], newEntry?: { plantId: string }) => {
-        if (updatedPlants.length >= 1) unlockAchievement('FIRST_PLANT');
-        if (updatedPlants.length >= 5) unlockAchievement('GARDEN_STARTER');
-        // A better trigger for PLANT_SAVIOR might be improving a plant's health status
-        if (updatedPlants.some(p => !p.analysis.isHealthy)) unlockAchievement('PLANT_SAVIOR');
-        if (updatedPlants.filter(p => p.analysis.isHealthy).length >= 5) unlockAchievement('GREEN_THUMB');
-        if (newEntry) unlockAchievement('FIRST_DIARY_NOTE');
-    }, [unlockAchievement]);
-    
     const login = useCallback(async (email: string, password: string): Promise<boolean> => {
         const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
         const user = users[email];
         
         if (user && user.password === hashPassword(password)) {
-            // Load user data
             const savedData = localStorage.getItem(`izyBotanic-appData-${email}`);
-            const userProfile = { name: user.name };
+            const userProfile = { name: user.name, growthPoints: user.growthPoints || 0, level: user.level || 1 };
             if (savedData) {
                 const parsedData = JSON.parse(savedData);
                 setAppData({
@@ -206,7 +248,6 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 setAppData({ ...getInitialAppData(), userProfile });
             }
             
-            // Set session state
             localStorage.setItem('izyBotanic-currentUser', email);
             setCurrentUser(email);
             setIsAuthenticated(true);
@@ -221,14 +262,11 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             throw new Error("Usuário já existe.");
         }
         
-        users[email] = { name, password: hashPassword(password) };
+        const userProfile = { name, growthPoints: 0, level: 1 };
+        users[email] = { ...userProfile, password: hashPassword(password) };
         localStorage.setItem('izyBotanic-users', JSON.stringify(users));
 
-        // Set App Data for new user
-        const userProfile = { name };
         setAppData({ ...getInitialAppData(), userProfile });
-
-        // Set session state
         localStorage.setItem('izyBotanic-currentUser', email);
         setCurrentUser(email);
         setIsAuthenticated(true);
@@ -245,10 +283,11 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const addPlant = useCallback((plant: Plant) => {
         setAppData(prev => {
             const newPlants = [...prev.plants, plant];
-            checkAchievements(newPlants);
-            return { ...prev, plants: newPlants };
+            const newAchievements = getUpdatedAchievements(prev.unlockedAchievements, newPlants);
+            return { ...prev, plants: newPlants, unlockedAchievements: newAchievements };
         });
-    }, [checkAchievements]);
+        addGrowthPoints(POINTS_CONFIG.ADD_PLANT);
+    }, [addGrowthPoints]);
 
     const deletePlant = useCallback((plantId: string) => {
         setAppData(prev => ({
@@ -273,10 +312,11 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 }
                 return plant;
             });
-            checkAchievements(newPlants, { plantId });
-            return { ...prev, plants: newPlants };
+            const newAchievements = getUpdatedAchievements(prev.unlockedAchievements, newPlants, { newHistoryNote: true });
+            return { ...prev, plants: newPlants, unlockedAchievements: newAchievements };
         });
-    }, [checkAchievements]);
+        addGrowthPoints(POINTS_CONFIG.ADD_HISTORY);
+    }, [addGrowthPoints]);
 
     const getRecommendations = useCallback(async (): Promise<PlantRecommendation[]> => {
         const plantNames = appData.plants.map(p => p.analysis.popularName);
@@ -284,9 +324,11 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }, [appData.plants]);
 
     const completeCareTask = useCallback((plantId: string, taskType: 'watering' | 'fertilizing' | 'custom', customTaskId?: string) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.map(p => {
+        setAppData(prev => {
+            const plantToUpdate = prev.plants.find(p => p.id === plantId);
+            const wasUnhealthy = plantToUpdate && !plantToUpdate.analysis.isHealthy;
+
+            const newPlants = prev.plants.map(p => {
                 if (p.id === plantId) {
                     if (taskType === 'custom' && customTaskId) {
                         return { ...p, customTasks: p.customTasks.map(t => t.id === customTaskId ? { ...t, lastCompleted: new Date().toISOString() } : t) };
@@ -296,9 +338,22 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     }
                 }
                 return p;
-            })
-        }));
-    }, []);
+            });
+
+            let newAchievements = prev.unlockedAchievements;
+            if (wasUnhealthy && !newAchievements.has('PLANT_SAVIOR')) {
+                newAchievements = new Set(prev.unlockedAchievements);
+                newAchievements.add('PLANT_SAVIOR');
+            }
+
+            return {
+                ...prev,
+                plants: newPlants,
+                unlockedAchievements: newAchievements,
+            };
+        });
+        addGrowthPoints(POINTS_CONFIG.COMPLETE_TASK);
+    }, [addGrowthPoints]);
 
     const updatePlantCareSchedule = useCallback((plantId: string, newSchedule: Partial<CareSchedule>) => {
         setAppData(prev => ({
@@ -365,14 +420,13 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
             planConfig.steps.forEach(step => {
                 const taskId = `${planId}-${step.day}-${new Date().getTime()}`;
-                // This logic ensures the task's first due date is correct based on the plan start
                 const lastCompletedDate = addDays(startDate, step.day - planConfig.durationDays);
 
                 newTasks.push({
                     id: taskId,
                     type: step.task.type,
                     customName: step.task.customName,
-                    frequencyDays: planConfig.durationDays, // Make it recur after the plan ends to avoid re-triggering during plan
+                    frequencyDays: planConfig.durationDays,
                     lastCompleted: lastCompletedDate.toISOString(),
                 });
                 newTaskIds.push(taskId);
@@ -399,7 +453,8 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 })
             };
         });
-    }, []);
+        addGrowthPoints(POINTS_CONFIG.ACTIVATE_PLAN);
+    }, [addGrowthPoints]);
 
     const cancelCarePlan = useCallback((plantId: string) => {
         setAppData(prev => ({
@@ -489,12 +544,12 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }, [appData.plants]);
 
     const value = useMemo(() => ({
-        isAuthenticated, currentUser, appData, alerts, isExpertLoading,
+        isAuthenticated, currentUser, appData, alerts, isExpertLoading, userProfile,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
         removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification
     }), [
-        isAuthenticated, currentUser, appData, alerts, isExpertLoading,
+        isAuthenticated, currentUser, appData, alerts, isExpertLoading, userProfile,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
         removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification
@@ -585,14 +640,13 @@ const AuthPage = () => {
 
 
 const Header = () => {
-  const { logout, alerts, appData } = useApp();
+  const { logout, alerts, userProfile } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
 
   const navLinks = [
     { path: '/calendar', label: 'Calendário', icon: CalendarIcon },
     { path: '/expert-ai', label: 'Especialista AI', icon: SparklesIcon },
-    { path: '/recommendations', label: 'Recomendações', icon: SparklesIcon },
     { path: '/achievements', label: 'Conquistas', icon: TrophyIcon }
   ];
 
@@ -614,10 +668,10 @@ const Header = () => {
                 {navLinks.map(link => <Link key={link.path} to={link.path} className={`flex items-center gap-2 font-semibold text-text-dark/80 hover:text-primary transition-colors ${location.pathname.startsWith(link.path) ? 'text-primary' : ''}`}><link.icon className="w-5 h-5"/>{link.label}</Link>)}
               </nav>
               <div className="flex items-center gap-3">
-                    {appData.userProfile?.name && (
-                        <div className="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm uppercase">
-                            {appData.userProfile.name[0]}
-                        </div>
+                    {userProfile?.name && (
+                       <Link to="/profile" className="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center font-bold text-sm uppercase hover:ring-2 hover:ring-primary-focus transition-all">
+                            {userProfile.name[0]}
+                        </Link>
                     )}
                     <button onClick={logout} className="text-text-dark/80 hover:text-primary transition-colors p-2 -mr-2" aria-label="Sair">
                         <LogoutIcon className="w-6 h-6" />
@@ -692,7 +746,6 @@ const DashboardPage = () => {
 
             <GardenStats plants={plants} weeklyTasks={weeklyTasksCount} />
             
-            {/* Alerts Section */}
             {alerts.length > 0 && (
                 <div className="mb-8">
                      <h2 className="text-2xl font-bold font-serif text-text-dark mb-4 flex items-center gap-3"><BellIcon className="w-6 h-6 text-accent"/>Alertas de Cuidado</h2>
@@ -1547,138 +1600,136 @@ const PlantDetailPage = () => {
 };
 
 const CareCalendarPage = () => {
-    const { appData, completeCareTask, updatePlantCareSchedule } = useApp();
-    const [editingPlant, setEditingPlant] = useState<Plant | null>(null);
+    const { appData, completeCareTask } = useApp();
     const { plants } = appData;
+    const [currentDate, setCurrentDate] = useState(new Date());
+    const [selectedDate, setSelectedDate] = useState(new Date());
 
-    const calendarDays = useMemo(() => {
-        const days: { date: Date; tasks: ( { plant: Plant; task: 'watering' | 'fertilizing' } | { plant: Plant; task: 'custom'; customTask: CustomCareTask } )[] }[] = [];
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        for (let i = 0; i < 7; i++) {
-            days.push({ date: addDays(today, i), tasks: [] });
-        }
-
+    const tasksByDate = useMemo(() => {
+        const tasks: Record<string, ({ plant: Plant; task: 'watering' | 'fertilizing' } | { plant: Plant; task: 'custom'; customTask: CustomCareTask })[]> = {};
+        
         plants.forEach(plant => {
             const { wateringFrequency, fertilizingFrequency } = plant.analysis.careSchedule;
             
-            if (wateringFrequency > 0) {
-                const nextWateringDate = addDays(new Date(plant.lastCare.watering), wateringFrequency);
-                const dayDiff = getDaysDifference(today, nextWateringDate);
-                if (dayDiff >= 0 && dayDiff < 7) {
-                    days[dayDiff].tasks.push({ plant, task: 'watering' });
+            // Look back and forward to populate the calendar
+            for (let i = -60; i < 60; i++) {
+                if (wateringFrequency > 0) {
+                    const nextWateringDate = addDays(new Date(plant.lastCare.watering), wateringFrequency * i);
+                    const dateKey = nextWateringDate.toISOString().split('T')[0];
+                    if (!tasks[dateKey]) tasks[dateKey] = [];
+                    tasks[dateKey].push({ plant, task: 'watering' });
                 }
-            }
-            
-            if (fertilizingFrequency > 0) {
-                const nextFertilizingDate = addDays(new Date(plant.lastCare.fertilizing), fertilizingFrequency);
-                const dayDiff = getDaysDifference(today, nextFertilizingDate);
-                if (dayDiff >= 0 && dayDiff < 7) {
-                    days[dayDiff].tasks.push({ plant, task: 'fertilizing' });
+                
+                if (fertilizingFrequency > 0) {
+                    const nextFertilizingDate = addDays(new Date(plant.lastCare.fertilizing), fertilizingFrequency * i);
+                    const dateKey = nextFertilizingDate.toISOString().split('T')[0];
+                    if (!tasks[dateKey]) tasks[dateKey] = [];
+                    tasks[dateKey].push({ plant, task: 'fertilizing' });
                 }
-            }
 
-            (plant.customTasks || []).forEach(customTask => {
-                const nextDueDate = addDays(new Date(customTask.lastCompleted), customTask.frequencyDays);
-                const dayDiff = getDaysDifference(today, nextDueDate);
-                if (dayDiff >= 0 && dayDiff < 7) {
-                    days[dayDiff].tasks.push({ plant, task: 'custom', customTask });
-                }
-            });
+                (plant.customTasks || []).forEach(customTask => {
+                     if (customTask.frequencyDays > 0) {
+                        const nextDueDate = addDays(new Date(customTask.lastCompleted), customTask.frequencyDays * i);
+                        const dateKey = nextDueDate.toISOString().split('T')[0];
+                        if (!tasks[dateKey]) tasks[dateKey] = [];
+                        tasks[dateKey].push({ plant, task: 'custom', customTask });
+                     }
+                });
+            }
         });
-        
-        days.forEach(day => day.tasks.sort((a,b) => a.plant.analysis.popularName.localeCompare(b.plant.analysis.popularName)));
-
-        return days;
+        return tasks;
     }, [plants]);
+
+    const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    const startDate = new Date(startOfMonth);
+    startDate.setDate(startDate.getDate() - startDate.getDay());
+    const endDate = new Date(endOfMonth);
+    endDate.setDate(endDate.getDate() + (6 - endDate.getDay()));
+
+    const calendarDays: {date: Date, isCurrentMonth: boolean}[] = [];
+    let date = new Date(startDate);
+    while (date <= endDate) {
+        calendarDays.push({date: new Date(date), isCurrentMonth: date.getMonth() === currentDate.getMonth()});
+        date.setDate(date.getDate() + 1);
+    }
+
+    const changeMonth = (offset: number) => {
+        setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
+    };
+
+    const selectedDayTasks = tasksByDate[selectedDate.toISOString().split('T')[0]] || [];
     
-    const handleSaveSchedule = (newSchedule: Partial<CareSchedule>) => {
-        if (editingPlant) {
-            updatePlantCareSchedule(editingPlant.id, newSchedule);
-        }
-    };
-
-    const totalTasks = useMemo(() => calendarDays.reduce((acc, day) => acc + day.tasks.length, 0), [calendarDays]);
-
-    const getDayLabel = (date: Date, index: number) => {
-        if (index === 0) return 'Hoje';
-        if (index === 1) return 'Amanhã';
-        return date.toLocaleDateString('pt-BR', { weekday: 'long' });
-    };
-
     return (
-        <>
-            <div className="container mx-auto p-4 md:p-6">
-                <h2 className="text-3xl font-bold font-serif text-text-dark mb-6">Calendário de Cuidados</h2>
-                <div className="space-y-8">
-                    {plants.length === 0 ? (
-                         <div className="text-center bg-white p-10 rounded-2xl shadow-lg">
-                            <CalendarIcon className="w-16 h-16 mx-auto text-gray-300" />
-                            <h3 className="mt-4 text-xl font-bold text-text-dark">Seu calendário está vazio</h3>
-                            <p className="text-gray-500 mt-2">Adicione plantas ao seu jardim para ver as tarefas de cuidado aqui.</p>
-                        </div>
-                    ) : totalTasks === 0 ? (
-                        <div className="text-center bg-white p-10 rounded-2xl shadow-lg">
-                            <CheckCircleIcon className="w-16 h-16 mx-auto text-primary" />
-                            <h3 className="mt-4 text-xl font-bold text-text-dark">Tudo em dia!</h3>
-                            <p className="text-gray-500 mt-2">Nenhuma tarefa de cuidado agendada para os próximos 7 dias. Bom trabalho!</p>
-                        </div>
-                    ) : (
-                        calendarDays.map((day, index) => day.tasks.length > 0 && (
-                            <div key={day.date.toISOString()}>
-                                <h3 className="font-bold text-xl text-primary mb-3 sticky top-16 bg-background/80 backdrop-blur-sm py-2">
-                                    {getDayLabel(day.date, index)}
-                                    <span className="text-gray-500 font-normal ml-2 text-base">
-                                        {day.date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' })}
-                                    </span>
-                                </h3>
-                                <div className="space-y-4">
-                                    {day.tasks.map((item, idx) => {
-                                        const taskDisplay = item.task === 'custom'
-                                            ? getCustomTaskDisplay(item.customTask)
-                                            : {
-                                                name: item.task === 'watering' ? 'Regar' : 'Adubar',
-                                                icon: item.task === 'watering' ? WaterDropIcon : SproutIcon,
-                                                color: item.task === 'watering' ? 'text-blue-600' : 'text-green-700'
-                                              };
-                                        const Icon = taskDisplay.icon;
-                                        
-                                        return (
-                                            <div key={`${item.plant.id}-${item.task}-${idx}`} className="bg-white p-4 rounded-2xl shadow-lg flex items-center gap-4">
-                                                <img src={`data:image/jpeg;base64,${item.plant.image}`} alt={item.plant.analysis.popularName} className="w-16 h-16 object-cover rounded-lg" />
-                                                <div className="flex-grow">
-                                                    <h4 className="font-bold text-lg text-text-dark">{item.plant.analysis.popularName}</h4>
-                                                    <div className={`capitalize inline-flex items-center gap-2 text-sm font-semibold ${taskDisplay.color}`}>
-                                                        <Icon className="w-4 h-4" />
-                                                        {taskDisplay.name}
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <button onClick={() => { if(item.task !== 'custom') setEditingPlant(item.plant)}} disabled={item.task === 'custom'} className="p-2 text-gray-500 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Editar cronograma">
-                                                        <EditIcon className="w-5 h-5" />
-                                                    </button>
-                                                    <button onClick={() => completeCareTask(item.plant.id, item.task, item.task === 'custom' ? item.customTask.id : undefined)} className="bg-primary text-white font-bold py-2 px-4 rounded-lg hover:bg-primary-focus transition-colors text-sm">
-                                                        Concluir
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        )
+        <div className="container mx-auto p-4 md:p-6">
+            <h2 className="text-3xl font-bold font-serif text-text-dark mb-6">Calendário de Cuidados</h2>
+            <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-lg">
+                <div className="flex justify-between items-center mb-4">
+                    <button onClick={() => changeMonth(-1)} className="p-2 rounded-full hover:bg-secondary"><ArrowLeftIcon className="w-5 h-5"/></button>
+                    <h3 className="text-xl font-bold text-primary capitalize">{currentDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</h3>
+                    <button onClick={() => changeMonth(1)} className="p-2 rounded-full hover:bg-secondary"><ArrowLeftIcon className="w-5 h-5 rotate-180"/></button>
+                </div>
+                <div className="grid grid-cols-7 gap-1 text-center text-xs font-bold text-gray-500 mb-2">
+                    {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(day => <div key={day}>{day}</div>)}
+                </div>
+                <div className="grid grid-cols-7 gap-1">
+                    {calendarDays.map(({ date, isCurrentMonth }) => {
+                        const dateKey = date.toISOString().split('T')[0];
+                        const isSelected = dateKey === selectedDate.toISOString().split('T')[0];
+                        const isToday = dateKey === new Date().toISOString().split('T')[0];
+                        const dayTasks = tasksByDate[dateKey] || [];
+
+                        return (
+                            <div key={dateKey} onClick={() => setSelectedDate(date)} className={`h-16 sm:h-20 rounded-lg p-1.5 sm:p-2 flex flex-col cursor-pointer transition-colors ${isCurrentMonth ? 'hover:bg-secondary' : ''} ${isSelected ? 'bg-primary/20' : ''}`}>
+                                <span className={`font-bold ${isCurrentMonth ? 'text-text-dark' : 'text-gray-300'} ${isToday ? 'bg-primary text-white rounded-full w-6 h-6 flex items-center justify-center' : ''}`}>{date.getDate()}</span>
+                                <div className="flex gap-1 mt-auto">
+                                    {dayTasks.slice(0, 3).map((t, i) => {
+                                        const color = t.task === 'watering' ? 'bg-blue-500' : t.task === 'fertilizing' ? 'bg-green-500' : 'bg-purple-500';
+                                        return <div key={i} className={`w-1.5 h-1.5 rounded-full ${color}`}></div>
                                     })}
                                 </div>
                             </div>
-                        ))
+                        )
+                    })}
+                </div>
+            </div>
+            <div className="mt-6">
+                 <h3 className="font-bold text-xl text-primary mb-3">
+                    Tarefas para {selectedDate.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })}
+                </h3>
+                <div className="space-y-4">
+                    {selectedDayTasks.length > 0 ? selectedDayTasks.map((item, idx) => {
+                         const taskDisplay = item.task === 'custom'
+                            ? getCustomTaskDisplay(item.customTask)
+                            : {
+                                name: item.task === 'watering' ? 'Regar' : 'Adubar',
+                                icon: item.task === 'watering' ? WaterDropIcon : SproutIcon,
+                                color: item.task === 'watering' ? 'text-blue-600' : 'text-green-700'
+                                };
+                        const Icon = taskDisplay.icon;
+                        
+                        return (
+                             <div key={`${item.plant.id}-${item.task}-${idx}`} className="bg-white p-4 rounded-2xl shadow-lg flex items-center gap-4">
+                                <img src={`data:image/jpeg;base64,${item.plant.image}`} alt={item.plant.analysis.popularName} className="w-16 h-16 object-cover rounded-lg" />
+                                <div className="flex-grow">
+                                    <h4 className="font-bold text-lg text-text-dark">{item.plant.analysis.popularName}</h4>
+                                    <div className={`capitalize inline-flex items-center gap-2 text-sm font-semibold ${taskDisplay.color}`}>
+                                        <Icon className="w-4 h-4" />
+                                        {taskDisplay.name}
+                                    </div>
+                                </div>
+                                <Button onClick={() => completeCareTask(item.plant.id, item.task, item.task === 'custom' ? item.customTask.id : undefined)} className="text-sm py-2 w-auto px-4">Concluir</Button>
+                            </div>
+                        )
+                    }) : (
+                        <div className="text-center bg-white p-8 rounded-2xl shadow-lg">
+                            <CheckCircleIcon className="w-12 h-12 mx-auto text-gray-300" />
+                            <p className="text-gray-500 mt-2 font-semibold">Nenhuma tarefa para este dia.</p>
+                        </div>
                     )}
                 </div>
             </div>
-            {editingPlant && (
-                 <EditCareScheduleModal
-                    plant={editingPlant}
-                    onClose={() => setEditingPlant(null)}
-                    onSave={handleSaveSchedule}
-                />
-            )}
-        </>
+        </div>
     );
 };
 
@@ -1748,6 +1799,63 @@ const AchievementsPage = () => {
                     );
                 })}
              </div>
+        </div>
+    );
+};
+
+const ProfilePage = () => {
+    const { userProfile, appData } = useApp();
+    const { plants } = appData;
+
+    if (!userProfile) {
+        return <Navigate to="/" />;
+    }
+
+    const { name, level, growthPoints } = userProfile;
+    const levelName = getLevelName(level);
+    const pointsForCurrentLevel = (level - 1) * POINTS_PER_LEVEL;
+    const pointsForNextLevel = level * POINTS_PER_LEVEL;
+    const progress = Math.max(0, ((growthPoints - pointsForCurrentLevel) / POINTS_PER_LEVEL) * 100);
+
+    const stats = [
+        { label: "Plantas no Jardim", value: plants.length, icon: LeafIcon },
+        { label: "Nível Atual", value: level, icon: TrophyIcon },
+        { label: "Pontos de Crescimento", value: growthPoints, icon: SproutIcon },
+    ];
+
+    return (
+        <div className="container mx-auto p-4 md:p-6">
+            <div className="max-w-2xl mx-auto">
+                 <div className="bg-white p-6 rounded-2xl shadow-lg text-center">
+                    <div className="w-24 h-24 rounded-full bg-primary text-white flex items-center justify-center font-bold text-5xl uppercase mx-auto mb-4 ring-4 ring-primary/20">
+                        {name[0]}
+                    </div>
+                    <h2 className="text-3xl font-bold font-serif text-text-dark">{name}</h2>
+                    <p className="font-semibold text-accent">{levelName}</p>
+                 </div>
+                 <div className="bg-white p-6 rounded-2xl shadow-lg mt-6">
+                    <h3 className="font-bold text-lg text-text-dark mb-4">Progresso para o Próximo Nível</h3>
+                    <div className="w-full bg-secondary rounded-full h-4 mb-2">
+                        <div className="bg-gradient-to-r from-primary to-green-400 h-4 rounded-full" style={{ width: `${progress}%` }}></div>
+                    </div>
+                    <div className="flex justify-between text-sm font-semibold">
+                        <span className="text-gray-600">{growthPoints.toLocaleString()} PC</span>
+                        <span className="text-primary">{pointsForNextLevel.toLocaleString()} PC</span>
+                    </div>
+                 </div>
+                 <div className="bg-white p-6 rounded-2xl shadow-lg mt-6">
+                    <h3 className="font-bold text-lg text-text-dark mb-4">Estatísticas</h3>
+                    <div className="grid grid-cols-3 gap-4 text-center">
+                        {stats.map(stat => (
+                            <div key={stat.label} className="bg-secondary p-3 rounded-lg">
+                                <stat.icon className="w-7 h-7 mx-auto text-primary mb-1"/>
+                                <p className="text-2xl font-bold text-primary">{stat.value}</p>
+                                <p className="text-xs text-text-dark font-semibold">{stat.label}</p>
+                            </div>
+                        ))}
+                    </div>
+                 </div>
+            </div>
         </div>
     );
 };
@@ -1860,6 +1968,7 @@ const AppRoutes = () => {
             <Route path="/expert-ai" element={<ProtectedRoute><AppLayout><div className="h-full"><AIExpertPage /></div></AppLayout></ProtectedRoute>} />
             <Route path="/recommendations" element={<ProtectedRoute><AppLayout><RecommendationsPage /></AppLayout></ProtectedRoute>} />
             <Route path="/achievements" element={<ProtectedRoute><AppLayout><AchievementsPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/profile" element={<ProtectedRoute><AppLayout><ProfilePage /></AppLayout></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" />} />
         </Routes>
     );

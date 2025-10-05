@@ -113,6 +113,8 @@ export interface ChatMessage {
 
 export interface UserProfile {
     name: string;
+    growthPoints: number;
+    level: number;
 }
 
 export interface UserAppData {
@@ -128,6 +130,7 @@ export interface AppContextType {
   appData: UserAppData;
   alerts: CareAlert[];
   isExpertLoading: boolean;
+  userProfile: UserProfile | null;
   login: (email: string, password: string) => Promise<boolean>;
   signup: (name: string, email: string, password: string) => Promise<boolean>;
   logout: () => void;
