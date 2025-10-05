@@ -37,6 +37,12 @@ export interface PlantDiagnosis {
   pestAndDiseaseAnalysis?: PestAndDiseaseAnalysis;
 }
 
+export interface ReanalysisResponse {
+    isSuggestionAccepted: boolean;
+    reasoning: string;
+    newAnalysis?: PlantDiagnosis;
+}
+
 export interface HistoryEntry {
     id: string;
     date: string; // ISO string
@@ -54,6 +60,12 @@ export interface CustomCareTask {
     lastCompleted: string; // ISO date string
 }
 
+export interface ActiveCarePlan {
+    planId: string;
+    name: string;
+    startDate: string; // ISO date string
+    taskIds: string[];
+}
 
 export interface Plant {
   id: string;
@@ -66,6 +78,7 @@ export interface Plant {
       fertilizing: string; // ISO date string
   };
   customTasks: CustomCareTask[];
+  activeCarePlan?: ActiveCarePlan;
 }
 
 export interface PlantRecommendation {
@@ -129,4 +142,7 @@ export interface AppContextType {
   updateCustomTask: (plantId: string, taskId: string, updates: Partial<Omit<CustomCareTask, 'id'>>) => void;
   removeCustomTask: (plantId: string, taskId: string) => void;
   sendChatMessage: (message: string) => Promise<void>;
+  activateCarePlan: (plantId: string, planId: keyof typeof import('../App').CARE_PLANS_CONFIG) => void;
+  cancelCarePlan: (plantId: string) => void;
+  updatePlantIdentification: (plantId: string, userSuggestion: string) => Promise<{ success: boolean; message: string; }>;
 }

@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, Content } from "@google/genai";
-import type { PlantDiagnosis, PlantRecommendation, ChatMessage } from '../types';
+import type { PlantDiagnosis, PlantRecommendation, ChatMessage, ReanalysisResponse } from '../types';
 
 if (!process.env.API_KEY) {
     console.warn("API_KEY environment variable not set. Using a mock service.");
@@ -76,6 +76,16 @@ const plantAnalysisSchema = {
     required: ["speciesName", "popularName", "identificationConfidence", "isHealthy", "diagnosis", "careInstructions", "careSchedule", "generalTips"]
 };
 
+const reanalysisSchema = {
+    type: Type.OBJECT,
+    properties: {
+        isSuggestionAccepted: { type: Type.BOOLEAN, description: "Indica se a sugestão do usuário para a espécie da planta é plausível e foi aceita." },
+        reasoning: { type: Type.STRING, description: "Uma breve explicação sobre por que a sugestão foi aceita ou rejeitada, comparando as características visuais da imagem com a espécie sugerida." },
+        newAnalysis: plantAnalysisSchema, // Reutiliza o schema existente se a sugestão for aceita.
+    },
+    required: ["isSuggestionAccepted", "reasoning"]
+};
+
 const mockAnalysis: PlantDiagnosis = {
     speciesName: "Ficus lyrata",
     popularName: "Figueira-folha-de-violino",
@@ -145,6 +155,65 @@ export const analyzePlantImage = async (base64Image: string): Promise<PlantDiagn
     } catch (error) {
         console.error("Error analyzing plant image with Gemini API:", error);
         return mockAnalysis;
+    }
+};
+
+const mockReanalysis: ReanalysisResponse = {
+    isSuggestionAccepted: true,
+    reasoning: "A sugestão do usuário está correta. As folhas grandes, escuras e brilhantes são características da Ficus elastica, não da Ficus lyrata originalmente identificada.",
+    newAnalysis: {
+        ...mockAnalysis, // Use mock as base
+        speciesName: "Ficus elastica",
+        popularName: "Falsa-seringueira",
+        careInstructions: {
+            ...mockAnalysis.careInstructions,
+            watering: "Regue quando o topo do solo estiver seco. É mais tolerante à seca do que a Ficus lyrata."
+        }
+    }
+};
+
+export const reanalyzePlantImage = async (base64Image: string, userSuggestion: string): Promise<ReanalysisResponse> => {
+    if (!process.env.API_KEY || process.env.API_KEY === "mock-key") {
+        // Simulate a delay and potential rejection
+        return new Promise(resolve => setTimeout(() => {
+            if (userSuggestion.toLowerCase().includes('seringueira')) {
+                resolve(mockReanalysis);
+            } else {
+                resolve({
+                    isSuggestionAccepted: false,
+                    reasoning: "A sugestão não parece corresponder às características visuais. A planta na imagem tem folhas onduladas, o que não é típico da espécie sugerida."
+                });
+            }
+        }, 2500));
+    }
+    
+    const imagePart = { inlineData: { mimeType: 'image/jpeg', data: base64Image } };
+    const textPart = {
+        text: `
+        O usuário acredita que a planta na imagem é uma '${userSuggestion}'.
+        
+        1.  **Reavalie a Imagem:** Compare cuidadosamente as características visuais da planta (formato da folha, venação, caule, cor) com as características conhecidas da espécie '${userSuggestion}'.
+        2.  **Tome uma Decisão:**
+            *   **Se você concorda** que a sugestão do usuário é uma identificação plausível ou correta, defina 'isSuggestionAccepted' como true. Forneça um 'reasoning' explicando por que você concorda. Em seguida, gere um objeto 'newAnalysis' completo e detalhado para a espécie '${userSuggestion}', seguindo o schema de análise de planta.
+            *   **Se você discorda**, defina 'isSuggestionAccepted' como false. Forneça um 'reasoning' claro explicando as discrepâncias visuais entre a planta na imagem e a espécie '${userSuggestion}'. Omita o campo 'newAnalysis'.
+        
+        Responda estritamente no formato JSON definido pelo schema. A língua da resposta deve ser português do Brasil.
+        `
+    };
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { parts: [imagePart, textPart] },
+            config: { responseMimeType: 'application/json', responseSchema: reanalysisSchema }
+        });
+        return JSON.parse(response.text) as ReanalysisResponse;
+    } catch (error) {
+        console.error("Error re-analyzing plant image with Gemini API:", error);
+        return {
+            isSuggestionAccepted: false,
+            reasoning: "Ocorreu um erro ao tentar reanalisar a imagem. Por favor, tente novamente mais tarde."
+        };
     }
 };
 

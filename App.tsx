@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation, useParams, Link } from 'react-router-dom';
-import type { Plant, HistoryEntry, PlantDiagnosis, PlantRecommendation, Achievement, CareAlert, CareSchedule, CustomCareTask, ChatMessage, PredefinedTaskType, UserProfile, UserAppData } from './types';
-import { analyzePlantImage, getPlantRecommendations, getExpertAnswer } from './services/geminiService';
+import type { Plant, HistoryEntry, PlantDiagnosis, PlantRecommendation, Achievement, CareAlert, CareSchedule, CustomCareTask, ChatMessage, PredefinedTaskType, UserProfile, UserAppData, ActiveCarePlan } from './types';
+import { analyzePlantImage, getPlantRecommendations, getExpertAnswer, reanalyzePlantImage } from './services/geminiService';
 import { LeafIcon, LogoutIcon, ArrowLeftIcon, PlusIcon, SunIcon, WaterDropIcon, SproutIcon, CheckCircleIcon, BugIcon, CalendarIcon, PencilIcon, TrophyIcon, SparklesIcon, CameraIcon, RocketIcon, BellIcon, ScissorsIcon, EditIcon, TrashIcon, UsersIcon, RotateIcon, CleanLeafIcon, SprayIcon, RepotIcon } from './components/Icons';
 
 // --- HELPERS ---
@@ -30,14 +30,15 @@ const formatDueDate = (dueDate: Date): string => {
     return `Vence em ${diff} dias`;
 };
 
-// Simple pseudo-hashing for demonstration purposes.
-// In a real app, use a robust library like bcrypt.
-const hashPassword = async (password: string): Promise<string> => {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(password);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+// A simple, reliable, non-bitwise hashing function to ensure consistency across all environments.
+const hashPassword = (password: string): string => {
+    let hash = 0;
+    if (password.length === 0) return `izy_hash_v3_${hash}`;
+    for (let i = 0; i < password.length; i++) {
+        const char = password.charCodeAt(i);
+        hash = (hash * 31 + char) % 1000000007;
+    }
+    return `izy_hash_v3_${hash}`;
 };
 
 
@@ -84,13 +85,47 @@ const getSeason = (date: Date): keyof typeof SEASONAL_TIPS => {
     return 'Verão';
 }
 
-const initialAppData: Omit<UserAppData, 'userProfile'> = {
+// CARE PLANS CONFIGURATION
+export const CARE_PLANS_CONFIG = {
+  NEW_PLANT_ACCLIMATIZATION: {
+    id: 'NEW_PLANT_ACCLIMATIZATION',
+    name: 'Plano de Aclimatação',
+    description: 'Um guia de 14 dias para ajudar sua nova planta a se adaptar ao seu novo lar sem estresse.',
+    durationDays: 14,
+    icon: SproutIcon,
+    isAvailable: (plant: Plant) => true,
+    steps: [
+      { day: 1, task: { type: 'pest_check' as PredefinedTaskType, customName: 'Inspecionar por pragas da loja' } },
+      { day: 3, task: { type: 'other' as PredefinedTaskType, customName: 'Verificar umidade do solo (não regar)' } },
+      { day: 7, task: { type: 'rotate' as PredefinedTaskType } },
+      { day: 10, task: { type: 'other' as PredefinedTaskType, customName: 'Verificar sinais de estresse (folhas amarelas)' } },
+      { day: 14, task: { type: 'clean_leaves' as PredefinedTaskType, customName: 'Limpar folhas para remover poeira' } },
+    ]
+  },
+  RECOVERY_PLAN: {
+    id: 'RECOVERY_PLAN',
+    name: 'Plano de Recuperação',
+    description: 'Um programa intensivo de 21 dias para ajudar sua planta a se recuperar de estresse ou doenças.',
+    durationDays: 21,
+    icon: CheckCircleIcon,
+    isAvailable: (plant: Plant) => !plant.analysis.isHealthy,
+    steps: [
+      { day: 1, task: { type: 'pest_check' as PredefinedTaskType, customName: 'Aplicar tratamento inicial (se necessário)' } },
+      { day: 4, task: { type: 'other' as PredefinedTaskType, customName: 'Verificar umidade e remover folhas mortas' } },
+      { day: 8, task: { type: 'prune' as PredefinedTaskType, customName: 'Podar galhos danificados' } },
+      { day: 14, task: { type: 'other' as PredefinedTaskType, customName: 'Adubar com fertilizante diluído' } },
+      { day: 21, task: { type: 'other' as PredefinedTaskType, customName: 'Avaliar progresso e sinais de melhora' } },
+    ]
+  }
+};
+
+const getInitialAppData = (): Omit<UserAppData, 'userProfile'> => ({
     plants: [],
     unlockedAchievements: new Set(),
     chatHistory: [
         { id: 'init', role: 'model', text: 'Olá! Eu sou Izy, sua especialista em botânica. Como posso ajudar seu jardim hoje?' }
     ],
-};
+});
 
 // --- CONTEXT ---
 const AppContext = React.createContext<import('./types').AppContextType | null>(null);
@@ -98,35 +133,29 @@ const AppContext = React.createContext<import('./types').AppContextType | null>(
 const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!localStorage.getItem('izyBotanic-currentUser'));
     const [currentUser, setCurrentUser] = useState<string | null>(() => localStorage.getItem('izyBotanic-currentUser'));
-    const [appData, setAppData] = useState<UserAppData>({ ...initialAppData, userProfile: null });
-    const [isExpertLoading, setIsExpertLoading] = useState(false);
     
-    // Load user data on login
-    useEffect(() => {
-        if (currentUser) {
-            const savedData = localStorage.getItem(`izyBotanic-appData-${currentUser}`);
+    // Lazily initialize appData from localStorage
+    const [appData, setAppData] = useState<UserAppData>(() => {
+        const user = localStorage.getItem('izyBotanic-currentUser');
+        if (user) {
+            const savedData = localStorage.getItem(`izyBotanic-appData-${user}`);
             const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
-            const userProfile = users[currentUser] ? { name: users[currentUser].name } : null;
+            const userProfile = users[user] ? { name: users[user].name } : null;
 
             if (savedData) {
                 const parsedData = JSON.parse(savedData);
-                setAppData({
+                return {
                     ...parsedData,
                     unlockedAchievements: new Set(parsedData.unlockedAchievements || []),
                     userProfile,
-                });
-            } else {
-                 setAppData({
-                    ...initialAppData,
-                    userProfile
-                });
+                };
             }
-            setIsAuthenticated(true);
-        } else {
-            setIsAuthenticated(false);
-            setAppData({ ...initialAppData, userProfile: null });
+             return { ...getInitialAppData(), userProfile };
         }
-    }, [currentUser]);
+        return { ...getInitialAppData(), userProfile: null };
+    });
+    
+    const [isExpertLoading, setIsExpertLoading] = useState(false);
 
     // Persist user data on change
     useEffect(() => {
@@ -144,6 +173,7 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             if (prev.unlockedAchievements.has(id)) return prev;
             const newSet = new Set(prev.unlockedAchievements);
             newSet.add(id);
+            // You can add a toast notification here to inform the user
             return { ...prev, unlockedAchievements: newSet };
         });
     }, []);
@@ -151,6 +181,7 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const checkAchievements = useCallback((updatedPlants: Plant[], newEntry?: { plantId: string }) => {
         if (updatedPlants.length >= 1) unlockAchievement('FIRST_PLANT');
         if (updatedPlants.length >= 5) unlockAchievement('GARDEN_STARTER');
+        // A better trigger for PLANT_SAVIOR might be improving a plant's health status
         if (updatedPlants.some(p => !p.analysis.isHealthy)) unlockAchievement('PLANT_SAVIOR');
         if (updatedPlants.filter(p => p.analysis.isHealthy).length >= 5) unlockAchievement('GREEN_THUMB');
         if (newEntry) unlockAchievement('FIRST_DIARY_NOTE');
@@ -159,13 +190,27 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const login = useCallback(async (email: string, password: string): Promise<boolean> => {
         const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
         const user = users[email];
-        if (user) {
-            const hashedPassword = await hashPassword(password);
-            if (user.password === hashedPassword) {
-                localStorage.setItem('izyBotanic-currentUser', email);
-                setCurrentUser(email);
-                return true;
+        
+        if (user && user.password === hashPassword(password)) {
+            // Load user data
+            const savedData = localStorage.getItem(`izyBotanic-appData-${email}`);
+            const userProfile = { name: user.name };
+            if (savedData) {
+                const parsedData = JSON.parse(savedData);
+                setAppData({
+                    ...parsedData,
+                    unlockedAchievements: new Set(parsedData.unlockedAchievements || []),
+                    userProfile,
+                });
+            } else {
+                setAppData({ ...getInitialAppData(), userProfile });
             }
+            
+            // Set session state
+            localStorage.setItem('izyBotanic-currentUser', email);
+            setCurrentUser(email);
+            setIsAuthenticated(true);
+            return true;
         }
         throw new Error("Credenciais inválidas.");
     }, []);
@@ -175,19 +220,26 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         if (users[email]) {
             throw new Error("Usuário já existe.");
         }
-        const hashedPassword = await hashPassword(password);
-        users[email] = { name, password: hashedPassword };
+        
+        users[email] = { name, password: hashPassword(password) };
         localStorage.setItem('izyBotanic-users', JSON.stringify(users));
 
-        // Directly log the user in after signing up
+        // Set App Data for new user
+        const userProfile = { name };
+        setAppData({ ...getInitialAppData(), userProfile });
+
+        // Set session state
         localStorage.setItem('izyBotanic-currentUser', email);
         setCurrentUser(email);
+        setIsAuthenticated(true);
         return true;
     }, []);
 
     const logout = useCallback(() => {
         localStorage.removeItem('izyBotanic-currentUser');
         setCurrentUser(null);
+        setIsAuthenticated(false);
+        setAppData({ ...getInitialAppData(), userProfile: null });
     }, []);
 
     const addPlant = useCallback((plant: Plant) => {
@@ -301,30 +353,124 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             setIsExpertLoading(false);
         }
     }, [appData.chatHistory]);
+    
+    const activateCarePlan = useCallback((plantId: string, planId: keyof typeof CARE_PLANS_CONFIG) => {
+        setAppData(prev => {
+            const planConfig = CARE_PLANS_CONFIG[planId];
+            if (!planConfig) return prev;
+
+            const startDate = new Date();
+            const newTasks: CustomCareTask[] = [];
+            const newTaskIds: string[] = [];
+
+            planConfig.steps.forEach(step => {
+                const taskId = `${planId}-${step.day}-${new Date().getTime()}`;
+                // This logic ensures the task's first due date is correct based on the plan start
+                const lastCompletedDate = addDays(startDate, step.day - planConfig.durationDays);
+
+                newTasks.push({
+                    id: taskId,
+                    type: step.task.type,
+                    customName: step.task.customName,
+                    frequencyDays: planConfig.durationDays, // Make it recur after the plan ends to avoid re-triggering during plan
+                    lastCompleted: lastCompletedDate.toISOString(),
+                });
+                newTaskIds.push(taskId);
+            });
+
+            const newActivePlan: ActiveCarePlan = {
+                planId: planConfig.id,
+                name: planConfig.name,
+                startDate: startDate.toISOString(),
+                taskIds: newTaskIds
+            };
+            
+            return {
+                ...prev,
+                plants: prev.plants.map(p => {
+                    if (p.id === plantId) {
+                        return {
+                            ...p,
+                            customTasks: [...p.customTasks, ...newTasks],
+                            activeCarePlan: newActivePlan,
+                        };
+                    }
+                    return p;
+                })
+            };
+        });
+    }, []);
+
+    const cancelCarePlan = useCallback((plantId: string) => {
+        setAppData(prev => ({
+            ...prev,
+            plants: prev.plants.map(p => {
+                if (p.id === plantId && p.activeCarePlan) {
+                    const taskIdsToRemove = new Set(p.activeCarePlan.taskIds);
+                    return {
+                        ...p,
+                        customTasks: p.customTasks.filter(task => !taskIdsToRemove.has(task.id)),
+                        activeCarePlan: undefined,
+                    };
+                }
+                return p;
+            })
+        }));
+    }, []);
+
+    const updatePlantIdentification = useCallback(async (plantId: string, userSuggestion: string): Promise<{ success: boolean; message: string; }> => {
+        const plant = getPlantById(plantId);
+        if (!plant) {
+            return { success: false, message: "Planta não encontrada." };
+        }
+
+        try {
+            const result = await reanalyzePlantImage(plant.image, userSuggestion);
+
+            if (result.isSuggestionAccepted && result.newAnalysis) {
+                setAppData(prev => ({
+                    ...prev,
+                    plants: prev.plants.map(p => p.id === plantId ? { ...p, analysis: result.newAnalysis! } : p)
+                }));
+                addHistoryEntry(plantId, `Identificação atualizada para ${result.newAnalysis.popularName}. ${result.reasoning}`);
+                return { success: true, message: 'Identificação atualizada com sucesso!' };
+            } else {
+                return { success: false, message: `A IA não pôde confirmar a sugestão. Motivo: ${result.reasoning}` };
+            }
+        } catch (error) {
+            console.error("Error updating plant identification:", error);
+            return { success: false, message: "Ocorreu um erro durante a reanálise. Tente novamente." };
+        }
+    }, [getPlantById, addHistoryEntry]);
+
 
     const alerts = useMemo((): CareAlert[] => {
         const today = new Date();
-        today.setHours(23, 59, 59, 999);
+        const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
         const allAlerts: CareAlert[] = [];
 
         appData.plants.forEach(plant => {
             const { wateringFrequency, fertilizingFrequency } = plant.analysis.careSchedule;
             if (wateringFrequency > 0) {
-                const nextWatering = addDays(new Date(plant.lastCare.watering), wateringFrequency);
-                if (nextWatering <= today) {
+                const lastWatering = new Date(plant.lastCare.watering);
+                const nextWatering = addDays(lastWatering, wateringFrequency);
+                if (nextWatering <= startOfToday) {
                     allAlerts.push({ plantId: plant.id, plantName: plant.analysis.popularName, plantImage: plant.image, task: 'watering', dueDate: nextWatering });
                 }
             }
             if (fertilizingFrequency > 0) {
-                const nextFertilizing = addDays(new Date(plant.lastCare.fertilizing), fertilizingFrequency);
-                if (nextFertilizing <= today) {
+                const lastFertilizing = new Date(plant.lastCare.fertilizing);
+                const nextFertilizing = addDays(lastFertilizing, fertilizingFrequency);
+                 if (nextFertilizing <= startOfToday) {
                     allAlerts.push({ plantId: plant.id, plantName: plant.analysis.popularName, plantImage: plant.image, task: 'fertilizing', dueDate: nextFertilizing });
                 }
             }
             (plant.customTasks || []).forEach(customTask => {
                 if (customTask.frequencyDays > 0) {
-                    const nextDueDate = addDays(new Date(customTask.lastCompleted), customTask.frequencyDays);
-                    if (nextDueDate <= today) {
+                    const lastCompleted = new Date(customTask.lastCompleted);
+                    const nextDueDate = addDays(lastCompleted, customTask.frequencyDays);
+                    if (nextDueDate <= startOfToday) {
                         allAlerts.push({
                             plantId: plant.id,
                             plantName: plant.analysis.popularName,
@@ -346,12 +492,12 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         isAuthenticated, currentUser, appData, alerts, isExpertLoading,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
-        removeCustomTask, sendChatMessage
+        removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification
     }), [
         isAuthenticated, currentUser, appData, alerts, isExpertLoading,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
-        removeCustomTask, sendChatMessage
+        removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification
     ]);
 
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
@@ -393,9 +539,9 @@ const AuthPage = () => {
     setIsLoading(true);
     try {
         if (isLoginView) {
-            await login(email, password);
+            await login(email.trim(), password);
         } else {
-            await signup(name, email, password);
+            await signup(name.trim(), email.trim(), password);
         }
     } catch (err: any) {
         setError(err.message || 'Ocorreu um erro.');
@@ -482,12 +628,60 @@ const Header = () => {
   );
 };
 
+const GardenStats: React.FC<{plants: Plant[], weeklyTasks: number}> = ({ plants, weeklyTasks }) => {
+    const totalPlants = plants.length;
+    const healthyPlants = plants.filter(p => p.analysis.isHealthy).length;
+
+    const stats = [
+        { label: "Total de Plantas", value: totalPlants, icon: LeafIcon },
+        { label: "Plantas Saudáveis", value: healthyPlants, icon: CheckCircleIcon },
+        { label: "Tarefas da Semana", value: weeklyTasks, icon: CalendarIcon }
+    ];
+
+    return (
+        <div className="mb-8 bg-white p-4 rounded-2xl shadow-lg">
+            <h2 className="text-xl font-bold font-serif text-text-dark mb-3">Visão Geral</h2>
+            <div className="grid grid-cols-3 gap-4 text-center">
+                {stats.map(stat => (
+                    <div key={stat.label} className="bg-secondary p-3 rounded-lg">
+                        <stat.icon className="w-7 h-7 mx-auto text-primary mb-1"/>
+                        <p className="text-2xl font-bold text-primary">{stat.value}</p>
+                        <p className="text-xs text-text-dark font-semibold">{stat.label}</p>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+
 const DashboardPage = () => {
     const { appData, alerts, completeCareTask } = useApp();
     const { plants, userProfile } = appData;
     const navigate = useNavigate();
     const currentSeason = getSeason(new Date());
     const seasonTip = SEASONAL_TIPS[currentSeason];
+    const [searchQuery, setSearchQuery] = useState('');
+
+    const filteredPlants = useMemo(() => 
+        plants.filter(plant => 
+            plant.analysis.popularName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            plant.analysis.speciesName.toLowerCase().includes(searchQuery.toLowerCase())
+        ), [plants, searchQuery]);
+
+    const weeklyTasksCount = useMemo(() => {
+        const today = new Date();
+        const nextWeek = addDays(today, 7);
+        let count = 0;
+        plants.forEach(p => {
+            if (p.analysis.careSchedule.wateringFrequency > 0 && addDays(new Date(p.lastCare.watering), p.analysis.careSchedule.wateringFrequency) < nextWeek) count++;
+            if (p.analysis.careSchedule.fertilizingFrequency > 0 && addDays(new Date(p.lastCare.fertilizing), p.analysis.careSchedule.fertilizingFrequency) < nextWeek) count++;
+            p.customTasks?.forEach(ct => {
+                if(addDays(new Date(ct.lastCompleted), ct.frequencyDays) < nextWeek) count++;
+            });
+        });
+        return count;
+    }, [plants]);
 
     return (
         <div className="container mx-auto p-4 md:p-6">
@@ -495,12 +689,14 @@ const DashboardPage = () => {
                 <h1 className="text-3xl font-bold font-serif text-text-dark">Olá, <span className="text-primary">{userProfile?.name}!</span></h1>
                 <p className="text-gray-600">Aqui está o resumo do seu jardim hoje.</p>
             </div>
+
+            <GardenStats plants={plants} weeklyTasks={weeklyTasksCount} />
             
             {/* Alerts Section */}
-            <div className="mb-8">
-                 <h2 className="text-2xl font-bold font-serif text-text-dark mb-4 flex items-center gap-3"><BellIcon className="w-6 h-6 text-accent"/>Alertas de Cuidado</h2>
-                 <div className="bg-white p-4 rounded-2xl shadow-lg">
-                    {alerts.length > 0 ? (
+            {alerts.length > 0 && (
+                <div className="mb-8">
+                     <h2 className="text-2xl font-bold font-serif text-text-dark mb-4 flex items-center gap-3"><BellIcon className="w-6 h-6 text-accent"/>Alertas de Cuidado</h2>
+                     <div className="bg-white p-4 rounded-2xl shadow-lg">
                         <div className="space-y-4">
                             {alerts.map(alert => (
                                 <div key={`${alert.plantId}-${alert.task}-${alert.customTaskId || ''}`} className="flex items-center gap-4 p-3 bg-secondary rounded-lg">
@@ -518,34 +714,38 @@ const DashboardPage = () => {
                                 </div>
                             ))}
                         </div>
-                    ) : (
-                        <p className="text-center text-gray-500 py-4">Nenhuma tarefa pendente. Suas plantas estão em dia!</p>
-                    )}
-                 </div>
-            </div>
+                     </div>
+                </div>
+            )}
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                {/* Menu Rapido */}
                 <div className="bg-white p-4 rounded-2xl shadow-lg">
                      <h3 className="text-xl font-bold font-serif text-text-dark mb-3">Menu Rápido</h3>
                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <div onClick={() => navigate('/analyze')} className="text-center p-3 bg-secondary rounded-lg cursor-pointer hover:bg-green-100"><PlusIcon className="w-7 h-7 mx-auto text-primary mb-1"/><span className="text-xs font-semibold text-text-dark">Analisar</span></div>
+                        <div onClick={() => navigate('/analyze')} className="text-center p-3 bg-secondary rounded-lg cursor-pointer hover:bg-green-100"><CameraIcon className="w-7 h-7 mx-auto text-primary mb-1"/><span className="text-xs font-semibold text-text-dark">Analisar</span></div>
                         <div onClick={() => navigate('/calendar')} className="text-center p-3 bg-secondary rounded-lg cursor-pointer hover:bg-green-100"><CalendarIcon className="w-7 h-7 mx-auto text-primary mb-1"/><span className="text-xs font-semibold text-text-dark">Calendário</span></div>
                         <div onClick={() => navigate('/expert-ai')} className="text-center p-3 bg-secondary rounded-lg cursor-pointer hover:bg-green-100"><SparklesIcon className="w-7 h-7 mx-auto text-primary mb-1"/><span className="text-xs font-semibold text-text-dark">Especialista AI</span></div>
                         <div onClick={() => navigate('/achievements')} className="text-center p-3 bg-secondary rounded-lg cursor-pointer hover:bg-green-100"><TrophyIcon className="w-7 h-7 mx-auto text-primary mb-1"/><span className="text-xs font-semibold text-text-dark">Conquistas</span></div>
                      </div>
                 </div>
-
-                {/* Dicas da Estacao */}
                 <div className="bg-white p-4 rounded-2xl shadow-lg">
                     <h3 className="text-xl font-bold font-serif text-text-dark mb-3">Dicas da Estação ({currentSeason})</h3>
                     <p className="text-sm text-gray-600">{seasonTip}</p>
                 </div>
             </div>
 
-            <h2 className="text-2xl font-bold font-serif text-text-dark mb-4">Meu Jardim</h2>
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold font-serif text-text-dark">Meu Jardim</h2>
+                 <input 
+                    type="text" 
+                    placeholder="Buscar planta..." 
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="shadow-sm appearance-none border rounded-lg py-2 px-3 text-text-dark leading-tight focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                {plants.map(plant => (
+                {filteredPlants.map(plant => (
                     <div key={plant.id} onClick={() => navigate(`/plant/${plant.id}`)} className="bg-white rounded-2xl shadow-lg overflow-hidden cursor-pointer group transform hover:-translate-y-1 transition-transform duration-300">
                         <img src={`data:image/jpeg;base64,${plant.image}`} alt={plant.analysis.popularName} className="w-full h-48 object-cover group-hover:opacity-90 transition-opacity" />
                         <div className="p-4">
@@ -559,12 +759,76 @@ const DashboardPage = () => {
                     </div>
                 ))}
             </div>
+            {plants.length > 0 && filteredPlants.length === 0 && (
+                <div className="text-center mt-16 col-span-full">
+                    <h2 className="text-xl font-bold text-text-dark">Nenhuma planta encontrada.</h2>
+                    <p className="text-gray-500 mt-2">Tente um termo de busca diferente.</p>
+                </div>
+            )}
             {plants.length === 0 && (
                 <div className="text-center mt-16 col-span-full">
                     <h2 className="text-2xl font-bold text-text-dark">Seu jardim está vazio.</h2>
                     <p className="text-gray-500 mt-2">Clique em "Analisar" para começar a cuidar das suas plantas.</p>
+                    <Button onClick={() => navigate('/analyze')} className="mt-4 max-w-xs mx-auto">Analisar Primeira Planta</Button>
                 </div>
             )}
+        </div>
+    );
+};
+
+
+const CameraCapture: React.FC<{ onCapture: (base64: string) => void; onClose: () => void; }> = ({ onCapture, onClose }) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [stream, setStream] = useState<MediaStream | null>(null);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        let streamInstance: MediaStream | null = null;
+        const enableStream = async () => {
+            try {
+                streamInstance = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                setStream(streamInstance);
+                if (videoRef.current) {
+                    videoRef.current.srcObject = streamInstance;
+                }
+            } catch (err) {
+                console.error("Error accessing camera:", err);
+                setError("Não foi possível acessar a câmera. Verifique as permissões do seu navegador.");
+            }
+        };
+        enableStream();
+
+        return () => {
+            if (streamInstance) {
+                streamInstance.getTracks().forEach(track => track.stop());
+            }
+        };
+    }, []);
+
+    const handleCapture = () => {
+        if (videoRef.current && canvasRef.current) {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const context = canvas.getContext('2d');
+            context?.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            onCapture(dataUrl);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black z-50 flex flex-col items-center justify-center">
+            {error && <p className="text-white text-center p-4 bg-red-500 rounded-md">{error}</p>}
+            <video ref={videoRef} autoPlay playsInline className={`w-full h-full object-cover ${error ? 'hidden' : ''}`} />
+            <canvas ref={canvasRef} className="hidden" />
+            <div className="absolute bottom-0 left-0 right-0 p-4 bg-black/50 flex justify-center items-center gap-8">
+                <button onClick={onClose} className="text-white font-bold py-2 px-4 rounded-lg">Cancelar</button>
+                <button onClick={handleCapture} disabled={!!error} className="w-20 h-20 bg-white rounded-full border-4 border-gray-300 disabled:opacity-50"></button>
+                <div className="w-[88px]"></div>
+            </div>
         </div>
     );
 };
@@ -578,6 +842,7 @@ const AnalyzePage = () => {
     const [error, setError] = useState<string | null>(null);
     const { addPlant } = useApp();
     const navigate = useNavigate();
+    const [isCameraOpen, setIsCameraOpen] = useState(false);
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -626,96 +891,113 @@ const AnalyzePage = () => {
         }
     };
 
-    return (
-        <div className="container mx-auto p-4 md:p-6">
-            {!analysisResult && (
-                <div className="max-w-2xl mx-auto text-center">
-                    <h2 className="text-3xl font-bold font-serif text-text-dark mb-4">Analisar a Saúde da Planta</h2>
-                    <p className="text-gray-600 mb-8">Envie uma foto nítida da sua planta para que nossa IA possa identificá-la e fornecer um diagnóstico completo.</p>
-                    <div className="bg-white p-8 rounded-2xl shadow-lg">
-                        <label htmlFor="plant-upload" className="w-full h-64 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center mb-6 bg-gray-50 cursor-pointer hover:border-primary">
-                            {image ? (
-                                <img src={image} alt="Pré-visualização" className="max-h-full max-w-full object-contain rounded-md" />
-                            ) : (
-                                <div className="text-center text-gray-500">
-                                    <PlusIcon className="w-10 h-10 mx-auto mb-2" />
-                                    <span>Clique para enviar uma foto</span>
-                                </div>
-                            )}
-                        </label>
-                        <input id="plant-upload" type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-                        {error && <p className="text-red-500 mb-4">{error}</p>}
-                        <Button onClick={handleAnalyze} disabled={!image || isLoading}>{isLoading ? 'Analisando...' : 'Analisar Planta'}</Button>
-                    </div>
-                </div>
-            )}
+    const handleCameraCapture = (dataUrl: string) => {
+        setImage(dataUrl);
+        setImageBase64(dataUrl.split(',')[1]);
+        setIsCameraOpen(false);
+    };
 
-            {isLoading && <div className="flex flex-col items-center justify-center mt-12"><Spinner /><p className="mt-4 text-text-dark font-semibold">Nossos botânicos de IA estão examinando sua planta...</p></div>}
-            
-            {analysisResult && !isLoading && (
-                 <div className="max-w-4xl mx-auto">
-                    <div className="text-center mb-8">
-                        <h2 className="font-serif text-5xl font-bold text-primary">{analysisResult.popularName}</h2>
-                        <p className="text-lg text-gray-500 italic">{analysisResult.speciesName}</p>
-                         <div className={`mt-3 inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium ${
-                            analysisResult.identificationConfidence === 'Alta' ? 'bg-green-100 text-green-800' :
-                            analysisResult.identificationConfidence === 'Média' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'
-                        }`}>
-                            Confiança da IA: <strong>{analysisResult.identificationConfidence}</strong>
+    return (
+        <>
+            {isCameraOpen && <CameraCapture onCapture={handleCameraCapture} onClose={() => setIsCameraOpen(false)} />}
+            <div className="container mx-auto p-4 md:p-6">
+                {!analysisResult && (
+                    <div className="max-w-2xl mx-auto text-center">
+                        <h2 className="text-3xl font-bold font-serif text-text-dark mb-4">Analisar a Saúde da Planta</h2>
+                        <p className="text-gray-600 mb-8">Envie uma foto nítida da sua planta para que nossa IA possa identificá-la e fornecer um diagnóstico completo.</p>
+                        <div className="bg-white p-8 rounded-2xl shadow-lg">
+                            <div className="w-full h-64 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center mb-6 bg-gray-50">
+                                {image ? (
+                                    <img src={image} alt="Pré-visualização" className="max-h-full max-w-full object-contain rounded-md" />
+                                ) : (
+                                    <div className="text-center text-gray-500">
+                                        <CameraIcon className="w-10 h-10 mx-auto mb-2" />
+                                        <span>Use a câmera ou envie um arquivo</span>
+                                    </div>
+                                )}
+                            </div>
+                            <input id="plant-upload" type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                             <div className="flex gap-4 mb-4">
+                                <label htmlFor="plant-upload" className="flex-1 cursor-pointer text-center bg-secondary text-primary font-semibold py-3 px-4 rounded-lg hover:bg-green-100 flex items-center justify-center gap-2">
+                                    <PlusIcon className="w-5 h-5" /><span>Enviar Arquivo</span>
+                                </label>
+                                <button onClick={() => setIsCameraOpen(true)} className="flex-1 text-center bg-secondary text-primary font-semibold py-3 px-4 rounded-lg hover:bg-green-100 flex items-center justify-center gap-2">
+                                    <CameraIcon className="w-5 h-5"/><span>Tirar Foto</span>
+                                </button>
+                            </div>
+                            {error && <p className="text-red-500 mb-4">{error}</p>}
+                            <Button onClick={handleAnalyze} disabled={!image || isLoading}>{isLoading ? 'Analisando...' : 'Analisar Planta'}</Button>
                         </div>
                     </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        <div className="lg:col-span-1 space-y-6">
-                             <img src={image!} alt="Planta analisada" className="rounded-2xl shadow-lg w-full object-cover aspect-square" />
-                             <div className="bg-white p-6 rounded-2xl shadow-lg text-center">
-                                <h3 className="text-lg font-bold text-primary mb-4">Adicionar ao Meu Jardim</h3>
-                                <div className="space-y-3">
-                                    <Button onClick={() => handleSavePlant('indoor')} className="bg-accent hover:bg-amber-600">Planta Interna</Button>
-                                    <Button onClick={() => handleSavePlant('outdoor')} className="bg-accent hover:bg-amber-600">Planta Externa</Button>
-                                </div>
+                )}
+
+                {isLoading && <div className="flex flex-col items-center justify-center mt-12"><Spinner /><p className="mt-4 text-text-dark font-semibold">Nossos botânicos de IA estão examinando sua planta...</p></div>}
+                
+                {analysisResult && !isLoading && (
+                     <div className="max-w-4xl mx-auto">
+                        <div className="text-center mb-8">
+                            <h2 className="font-serif text-5xl font-bold text-primary">{analysisResult.popularName}</h2>
+                            <p className="text-lg text-gray-500 italic">{analysisResult.speciesName}</p>
+                             <div className={`mt-3 inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium ${
+                                analysisResult.identificationConfidence === 'Alta' ? 'bg-green-100 text-green-800' :
+                                analysisResult.identificationConfidence === 'Média' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                                Confiança da IA: <strong>{analysisResult.identificationConfidence}</strong>
                             </div>
                         </div>
-                         <div className="lg:col-span-2 space-y-6">
-                            <div className="bg-white p-6 rounded-2xl shadow-lg">
-                                <h3 className="font-bold text-xl text-text-dark mb-3">Diagnóstico Geral</h3>
-                                <div className="flex items-center gap-3 p-4 rounded-lg bg-secondary">
-                                     <div className={`w-3 h-3 rounded-full ${analysisResult.isHealthy ? 'bg-green-500' : 'bg-amber-500'}`}></div>
-                                     <p className="font-bold text-lg text-text-dark">{analysisResult.diagnosis.title}</p>
-                                </div>
-                                <p className="text-text-dark mt-3">{analysisResult.diagnosis.description}</p>
-                            </div>
-                             {analysisResult.alternativeSpecies && analysisResult.alternativeSpecies.length > 0 && (
-                                <div className="bg-white p-6 rounded-2xl shadow-lg">
-                                    <h3 className="font-bold text-xl text-text-dark mb-4">Outras Possibilidades</h3>
-                                    <p className="text-sm text-gray-600 mb-4">Se a identificação acima não parecer correta, considere estas alternativas:</p>
-                                    <div className="space-y-4">
-                                        {analysisResult.alternativeSpecies.map((alt, index) => (
-                                            <div key={index} className="bg-secondary p-4 rounded-lg">
-                                                <h4 className="font-bold text-primary">{alt.popularName}</h4>
-                                                <p className="text-sm italic text-gray-500">{alt.speciesName}</p>
-                                                <p className="text-sm text-text-dark mt-2">{alt.reason}</p>
-                                            </div>
-                                        ))}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-1 space-y-6">
+                                 <img src={image!} alt="Planta analisada" className="rounded-2xl shadow-lg w-full object-cover aspect-square" />
+                                 <div className="bg-white p-6 rounded-2xl shadow-lg text-center">
+                                    <h3 className="text-lg font-bold text-primary mb-4">Adicionar ao Meu Jardim</h3>
+                                    <div className="space-y-3">
+                                        <Button onClick={() => handleSavePlant('indoor')} className="bg-accent hover:bg-amber-600">Planta Interna</Button>
+                                        <Button onClick={() => handleSavePlant('outdoor')} className="bg-accent hover:bg-amber-600">Planta Externa</Button>
                                     </div>
                                 </div>
-                            )}
-                            <div className="bg-white p-6 rounded-2xl shadow-lg">
-                                <h3 className="font-bold text-xl text-text-dark mb-4">Plano de Cuidados Essenciais</h3>
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-                                   <div className="bg-blue-50 p-4 rounded-lg"><WaterDropIcon className="w-8 h-8 text-blue-500 mx-auto mb-2" /><h4 className="font-bold text-blue-800">Rega</h4><p className="text-sm text-blue-700">{analysisResult.careInstructions.watering}</p></div>
-                                   <div className="bg-yellow-50 p-4 rounded-lg"><SunIcon className="w-8 h-8 text-yellow-500 mx-auto mb-2" /><h4 className="font-bold text-yellow-800">Luz Solar</h4><p className="text-sm text-yellow-700">{analysisResult.careInstructions.sunlight}</p></div>
-                                   <div className="bg-green-50 p-4 rounded-lg"><SproutIcon className="w-8 h-8 text-green-600 mx-auto mb-2" /><h4 className="font-bold text-green-800">Solo</h4><p className="text-sm text-green-700">{analysisResult.careInstructions.soil}</p></div>
+                            </div>
+                             <div className="lg:col-span-2 space-y-6">
+                                <div className="bg-white p-6 rounded-2xl shadow-lg">
+                                    <h3 className="font-bold text-xl text-text-dark mb-3">Diagnóstico Geral</h3>
+                                    <div className="flex items-center gap-3 p-4 rounded-lg bg-secondary">
+                                         <div className={`w-3 h-3 rounded-full ${analysisResult.isHealthy ? 'bg-green-500' : 'bg-amber-500'}`}></div>
+                                         <p className="font-bold text-lg text-text-dark">{analysisResult.diagnosis.title}</p>
+                                    </div>
+                                    <p className="text-text-dark mt-3">{analysisResult.diagnosis.description}</p>
                                 </div>
-                            </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-lg">
-                                <h3 className="font-bold text-xl text-text-dark mb-4">Dicas de Especialista</h3>
-                                <ul className="space-y-3">{analysisResult.generalTips.map((tip, i) => <li key={i} className="flex items-start gap-3"><CheckCircleIcon className="w-5 h-5 text-primary flex-shrink-0 mt-1" /><span>{tip}</span></li>)}</ul>
-                            </div>
-                         </div>
+                                 {analysisResult.alternativeSpecies && analysisResult.alternativeSpecies.length > 0 && (
+                                    <div className="bg-white p-6 rounded-2xl shadow-lg">
+                                        <h3 className="font-bold text-xl text-text-dark mb-4">Outras Possibilidades</h3>
+                                        <p className="text-sm text-gray-600 mb-4">Se a identificação acima não parecer correta, considere estas alternativas:</p>
+                                        <div className="space-y-4">
+                                            {analysisResult.alternativeSpecies.map((alt, index) => (
+                                                <div key={index} className="bg-secondary p-4 rounded-lg">
+                                                    <h4 className="font-bold text-primary">{alt.popularName}</h4>
+                                                    <p className="text-sm italic text-gray-500">{alt.speciesName}</p>
+                                                    <p className="text-sm text-text-dark mt-2">{alt.reason}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="bg-white p-6 rounded-2xl shadow-lg">
+                                    <h3 className="font-bold text-xl text-text-dark mb-4">Plano de Cuidados Essenciais</h3>
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+                                       <div className="bg-blue-50 p-4 rounded-lg"><WaterDropIcon className="w-8 h-8 text-blue-500 mx-auto mb-2" /><h4 className="font-bold text-blue-800">Rega</h4><p className="text-sm text-blue-700">{analysisResult.careInstructions.watering}</p></div>
+                                       <div className="bg-yellow-50 p-4 rounded-lg"><SunIcon className="w-8 h-8 text-yellow-500 mx-auto mb-2" /><h4 className="font-bold text-yellow-800">Luz Solar</h4><p className="text-sm text-yellow-700">{analysisResult.careInstructions.sunlight}</p></div>
+                                       <div className="bg-green-50 p-4 rounded-lg"><SproutIcon className="w-8 h-8 text-green-600 mx-auto mb-2" /><h4 className="font-bold text-green-800">Solo</h4><p className="text-sm text-green-700">{analysisResult.careInstructions.soil}</p></div>
+                                    </div>
+                                </div>
+                                <div className="bg-white p-6 rounded-2xl shadow-lg">
+                                    <h3 className="font-bold text-xl text-text-dark mb-4">Dicas de Especialista</h3>
+                                    <ul className="space-y-3">{analysisResult.generalTips.map((tip, i) => <li key={i} className="flex items-start gap-3"><CheckCircleIcon className="w-5 h-5 text-primary flex-shrink-0 mt-1" /><span>{tip}</span></li>)}</ul>
+                                </div>
+                             </div>
+                        </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )}
+            </div>
+        </>
     );
 };
 
@@ -874,9 +1156,144 @@ const DeleteConfirmationModal: React.FC<{
     );
 };
 
+const EditIdentificationModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    onSubmit: (suggestion: string) => void;
+    isLoading: boolean;
+    plantName: string;
+}> = ({ isOpen, onClose, onSubmit, isLoading, plantName }) => {
+    const [suggestion, setSuggestion] = useState('');
+
+    if (!isOpen) return null;
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (suggestion.trim()) {
+            onSubmit(suggestion.trim());
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+                <form onSubmit={handleSubmit}>
+                    <h3 className="font-bold text-xl text-text-dark mb-2">Corrigir Identificação</h3>
+                    <p className="text-gray-600 mb-4">
+                        Acha que a planta não é um(a) <strong>{plantName}</strong>? Sugira o nome correto e nossa IA fará uma nova verificação.
+                    </p>
+                    <div className="space-y-4">
+                        <input
+                            type="text"
+                            value={suggestion}
+                            onChange={e => setSuggestion(e.target.value)}
+                            className="block w-full shadow-sm sm:text-sm border-gray-300 rounded-lg py-3 px-4 focus:ring-primary focus:border-primary"
+                            placeholder="Ex: Samambaia Americana"
+                            required
+                        />
+                    </div>
+                    <div className="mt-6 flex justify-end gap-3">
+                        <button type="button" onClick={onClose} disabled={isLoading} className="bg-gray-200 text-gray-800 font-bold py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors disabled:opacity-50">Cancelar</button>
+                        <button type="submit" disabled={isLoading || !suggestion.trim()} className="bg-primary text-white font-bold py-2 px-4 rounded-lg hover:bg-primary-focus transition-colors disabled:bg-gray-400 flex items-center justify-center">
+                            {isLoading ? (
+                                <>
+                                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                                    Analisando...
+                                </>
+                            ) : (
+                                'Reanalisar com IA'
+                            )}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+
+const CarePlanComponent: React.FC<{ plant: Plant }> = ({ plant }) => {
+    const { activateCarePlan, cancelCarePlan } = useApp();
+    const { activeCarePlan } = plant;
+
+    if (activeCarePlan) {
+        const planConfig = Object.values(CARE_PLANS_CONFIG).find(p => p.id === activeCarePlan.planId);
+        if (!planConfig) return null; // Should not happen
+
+        const today = new Date();
+        const startDate = new Date(activeCarePlan.startDate);
+        const dayOfPlan = getDaysDifference(startDate, today) + 1;
+        const progress = Math.min(100, Math.max(0, (dayOfPlan / planConfig.durationDays) * 100));
+
+        const planTasks = plant.customTasks.filter(task => activeCarePlan.taskIds.includes(task.id));
+
+        return (
+             <div className="bg-white p-6 rounded-2xl shadow-lg">
+                <h3 className="font-bold text-xl text-primary mb-4">Plano de Cuidado Ativo</h3>
+                <div className="mb-4">
+                    <div className="flex justify-between items-center mb-1">
+                        <p className="font-bold text-text-dark">{activeCarePlan.name}</p>
+                        <span className="text-sm font-semibold text-gray-600">Dia {dayOfPlan} de {planConfig.durationDays}</span>
+                    </div>
+                    <div className="w-full bg-secondary rounded-full h-2.5">
+                        <div className="bg-primary h-2.5 rounded-full" style={{ width: `${progress}%` }}></div>
+                    </div>
+                </div>
+                <div className="space-y-2 mb-4">
+                    <h4 className="font-semibold text-sm text-gray-700 mb-2">Próximos Passos:</h4>
+                    {planTasks.map(task => {
+                        const dueDate = addDays(new Date(task.lastCompleted), task.frequencyDays);
+                         const isComplete = dueDate < today;
+                        const taskDisplay = getCustomTaskDisplay(task);
+                        return (
+                             <div key={task.id} className={`flex items-center gap-3 text-sm ${isComplete ? 'text-gray-400 line-through' : 'text-text-dark'}`}>
+                                <taskDisplay.icon className={`w-4 h-4 flex-shrink-0 ${isComplete ? 'text-gray-400' : taskDisplay.color}`} />
+                                <span>{taskDisplay.name}</span>
+                                <span className="ml-auto font-medium">{formatDueDate(dueDate)}</span>
+                            </div>
+                        );
+                    })}
+                </div>
+                <button onClick={() => cancelCarePlan(plant.id)} className="w-full text-center bg-red-100 text-red-700 font-bold py-2 px-4 rounded-lg hover:bg-red-200 transition-colors text-sm">
+                    Cancelar Plano
+                </button>
+            </div>
+        );
+    }
+    
+    const availablePlans = Object.values(CARE_PLANS_CONFIG).filter(plan => plan.isAvailable(plant));
+
+    if (availablePlans.length === 0) return null;
+
+    return (
+        <div className="bg-white p-6 rounded-2xl shadow-lg">
+            <h3 className="font-bold text-xl text-primary mb-4">Planos de Cuidado Guiados</h3>
+            <div className="space-y-4">
+                {availablePlans.map(plan => {
+                    const Icon = plan.icon;
+                    return (
+                        <div key={plan.id} className="bg-secondary p-4 rounded-lg">
+                            <div className="flex items-start gap-3">
+                                <Icon className="w-8 h-8 text-primary flex-shrink-0" />
+                                <div>
+                                    <h4 className="font-bold text-text-dark">{plan.name}</h4>
+                                    <p className="text-sm text-gray-600 mt-1">{plan.description}</p>
+                                </div>
+                            </div>
+                            <button onClick={() => activateCarePlan(plant.id, plan.id as keyof typeof CARE_PLANS_CONFIG)} className="mt-3 w-full bg-primary text-white font-bold py-2 rounded-lg hover:bg-primary-focus text-sm">
+                                Iniciar Plano de {plan.durationDays} Dias
+                            </button>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
+
 
 const PlantDetailPage = () => {
-    const { getPlantById, addHistoryEntry, updatePlantCareSchedule, removeCustomTask, deletePlant } = useApp();
+    const { getPlantById, addHistoryEntry, updatePlantCareSchedule, removeCustomTask, deletePlant, updatePlantIdentification } = useApp();
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const plant = id ? getPlantById(id) : undefined;
@@ -890,6 +1307,9 @@ const PlantDetailPage = () => {
     const [isCustomTaskModalOpen, setIsCustomTaskModalOpen] = useState(false);
     const [editingCustomTask, setEditingCustomTask] = useState<CustomCareTask | null>(null);
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [isEditIdModalOpen, setIsEditIdModalOpen] = useState(false);
+    const [isReanalyzing, setIsReanalyzing] = useState(false);
+    const [reanalysisMessage, setReanalysisMessage] = useState<string | null>(null);
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -928,11 +1348,29 @@ const PlantDetailPage = () => {
         }
     };
 
+    const handleUpdateIdentification = async (userSuggestion: string) => {
+        if (!plant) return;
+        setIsReanalyzing(true);
+        setReanalysisMessage(null);
+        const result = await updatePlantIdentification(plant.id, userSuggestion);
+        setIsReanalyzing(false);
+        setReanalysisMessage(result.message);
+        if (result.success) {
+            setIsEditIdModalOpen(false);
+            setTimeout(() => setReanalysisMessage(null), 5000);
+        }
+    };
+
     if (!plant) return <div className="text-center p-10"><h2 className="text-2xl font-bold">Planta não encontrada</h2></div>;
-    const { analysis, history, location, lastCare, customTasks } = plant;
+    const { analysis, history, location, lastCare, customTasks, activeCarePlan } = plant;
     
     const nextWateringDate = addDays(new Date(lastCare.watering), analysis.careSchedule.wateringFrequency);
     const nextFertilizingDate = analysis.careSchedule.fertilizingFrequency > 0 ? addDays(new Date(lastCare.fertilizing), analysis.careSchedule.fertilizingFrequency) : null;
+    
+    const userCreatedTasks = useMemo(() => {
+        const planTaskIds = new Set(activeCarePlan?.taskIds || []);
+        return customTasks.filter(task => !planTaskIds.has(task.id));
+    }, [customTasks, activeCarePlan]);
 
     return (
         <>
@@ -940,13 +1378,25 @@ const PlantDetailPage = () => {
                 <div className="max-w-6xl mx-auto">
                      <div className="text-center mb-6">
                         <span className="bg-secondary text-accent font-semibold px-3 py-1 rounded-full text-sm capitalize">{location === 'indoor' ? 'Planta Interna' : 'Planta Externa'}</span>
-                        <h2 className="font-serif text-5xl font-bold text-primary mt-2">{analysis.popularName}</h2>
+                        <div className="flex items-center justify-center gap-2">
+                            <h2 className="font-serif text-5xl font-bold text-primary mt-2">{analysis.popularName}</h2>
+                            <button onClick={() => setIsEditIdModalOpen(true)} className="text-gray-400 hover:text-primary mt-4 p-1" aria-label="Corrigir identificação">
+                                <PencilIcon className="w-6 h-6"/>
+                            </button>
+                        </div>
                         <p className="text-lg text-gray-500 italic">{analysis.speciesName}</p>
+                        {reanalysisMessage && (
+                            <div className={`mt-4 p-3 max-w-2xl mx-auto rounded-lg text-sm font-semibold ${reanalysisMessage.includes('sucesso') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                {reanalysisMessage}
+                            </div>
+                        )}
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
                         <div className="lg:col-span-2 space-y-6">
                             <img src={`data:image/jpeg;base64,${plant.image}`} alt={analysis.popularName} className="rounded-2xl shadow-xl w-full h-auto object-cover aspect-square" />
                             
+                            <CarePlanComponent plant={plant} />
+
                             <div className="bg-white p-6 rounded-2xl shadow-lg">
                                 <div className="flex justify-between items-center mb-4">
                                     <h3 className="font-bold text-xl text-primary">Cronograma Principal</h3>
@@ -960,9 +1410,9 @@ const PlantDetailPage = () => {
                             </div>
                             
                             <div className="bg-white p-6 rounded-2xl shadow-lg">
-                                <h3 className="font-bold text-xl text-primary mb-4">Tarefas Adicionais</h3>
+                                <h3 className="font-bold text-xl text-primary mb-4">Suas Tarefas Recorrentes</h3>
                                 <div className="space-y-3 mb-4">
-                                    {customTasks?.length > 0 ? customTasks.map(task => {
+                                    {userCreatedTasks.length > 0 ? userCreatedTasks.map(task => {
                                         const { name, icon: Icon, color } = getCustomTaskDisplay(task);
                                         return (
                                             <div key={task.id} className="bg-gray-50 p-3 rounded-lg flex justify-between items-center">
@@ -979,11 +1429,19 @@ const PlantDetailPage = () => {
                                                 </div>
                                             </div>
                                         )
-                                    }) : <p className="text-sm text-gray-500 text-center py-2">Nenhuma tarefa adicional.</p>}
+                                    }) : <p className="text-sm text-gray-500 text-center py-2">Nenhuma tarefa recorrente criada.</p>}
                                 </div>
                                 <Button className="text-sm py-2 bg-secondary text-primary hover:bg-green-100" onClick={() => { setEditingCustomTask(null); setIsCustomTaskModalOpen(true); }}><PlusIcon className="w-4 h-4 inline-block mr-1"/> Adicionar Tarefa</Button>
                             </div>
-
+                        </div>
+                        <div className="lg:col-span-3 space-y-6">
+                            {analysis.pestAndDiseaseAnalysis && (
+                                 <div className="bg-red-50 border-l-4 border-red-500 p-5 rounded-r-lg shadow-lg">
+                                    <div className="flex items-start gap-4"><BugIcon className="w-8 h-8 text-red-600 flex-shrink-0" />
+                                        <div><h3 className="font-bold text-xl text-red-800">{analysis.pestAndDiseaseAnalysis.title}</h3><p className="text-red-700 mt-1">{analysis.pestAndDiseaseAnalysis.description}<br/><strong>Tratamento: </strong>{analysis.pestAndDiseaseAnalysis.suggestedTreatment}</p></div>
+                                    </div>
+                                </div>
+                            )}
                              <div className="bg-white p-6 rounded-2xl shadow-lg">
                                 <h3 className="font-bold text-xl text-primary mb-4">Diário da Planta</h3>
                                 <form onSubmit={handleAddNote} className="space-y-3">
@@ -1005,15 +1463,6 @@ const PlantDetailPage = () => {
                                     )) : <p className="text-sm text-gray-500 text-center py-4">Nenhuma anotação ainda.</p>}
                                 </div>
                             </div>
-                        </div>
-                        <div className="lg:col-span-3 space-y-6">
-                            {analysis.pestAndDiseaseAnalysis && (
-                                 <div className="bg-red-50 border-l-4 border-red-500 p-5 rounded-r-lg shadow-lg">
-                                    <div className="flex items-start gap-4"><BugIcon className="w-8 h-8 text-red-600 flex-shrink-0" />
-                                        <div><h3 className="font-bold text-xl text-red-800">{analysis.pestAndDiseaseAnalysis.title}</h3><p className="text-red-700 mt-1">{analysis.pestAndDiseaseAnalysis.description}<br/><strong>Tratamento: </strong>{analysis.pestAndDiseaseAnalysis.suggestedTreatment}</p></div>
-                                    </div>
-                                </div>
-                            )}
                             <div className="bg-white p-6 rounded-2xl shadow-lg">
                                 <h3 className="font-bold text-xl text-primary mb-3">Diagnóstico Geral</h3>
                                 <div className="flex items-center gap-3 p-4 rounded-lg bg-secondary"><div className={`w-3 h-3 rounded-full ${analysis.isHealthy ? 'bg-green-500' : 'bg-amber-500'}`}></div><p className="font-bold text-lg text-text-dark">{analysis.diagnosis.title}</p></div>
@@ -1081,6 +1530,15 @@ const PlantDetailPage = () => {
                     isOpen={isDeleteModalOpen}
                     onClose={() => setIsDeleteModalOpen(false)}
                     onConfirm={handleDeletePlant}
+                    plantName={plant.analysis.popularName}
+                />
+            )}
+            {plant && (
+                 <EditIdentificationModal
+                    isOpen={isEditIdModalOpen}
+                    onClose={() => { setIsEditIdModalOpen(false); setReanalysisMessage(null); }}
+                    onSubmit={handleUpdateIdentification}
+                    isLoading={isReanalyzing}
                     plantName={plant.analysis.popularName}
                 />
             )}
@@ -1322,7 +1780,7 @@ const AIExpertPage = () => {
     };
     
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-screen">
             <div className="container mx-auto px-4 md:px-6 pt-4 flex-shrink-0">
                 <h2 className="text-3xl font-bold font-serif text-text-dark mb-4">Fale com a Izy</h2>
                 <p className="text-gray-600 mb-4 -mt-2">Sua especialista em botânica para tirar qualquer dúvida.</p>
@@ -1377,7 +1835,14 @@ const AIExpertPage = () => {
 
 // --- Layout and Routing ---
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => useApp().isAuthenticated ? <>{children}</> : <Navigate to="/" replace />;
-const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => <div className="min-h-screen flex flex-col bg-background"><Header /><main className="flex-grow">{children}</main></div>;
+const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <div className="min-h-screen flex flex-col bg-background">
+        <Header />
+        <main className="flex-grow">
+            {children}
+        </main>
+    </div>
+);
 
 function App() {
   return <AppProvider><HashRouter><AppRoutes /></HashRouter></AppProvider>;
@@ -1392,7 +1857,7 @@ const AppRoutes = () => {
             <Route path="/analyze" element={<ProtectedRoute><AppLayout><AnalyzePage /></AppLayout></ProtectedRoute>} />
             <Route path="/plant/:id" element={<ProtectedRoute><AppLayout><PlantDetailPage /></AppLayout></ProtectedRoute>} />
             <Route path="/calendar" element={<ProtectedRoute><AppLayout><CareCalendarPage /></AppLayout></ProtectedRoute>} />
-            <Route path="/expert-ai" element={<ProtectedRoute><AppLayout><AIExpertPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/expert-ai" element={<ProtectedRoute><AppLayout><div className="h-full"><AIExpertPage /></div></AppLayout></ProtectedRoute>} />
             <Route path="/recommendations" element={<ProtectedRoute><AppLayout><RecommendationsPage /></AppLayout></ProtectedRoute>} />
             <Route path="/achievements" element={<ProtectedRoute><AppLayout><AchievementsPage /></AppLayout></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" />} />

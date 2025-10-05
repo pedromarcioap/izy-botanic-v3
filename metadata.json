@@ -1,5 +1,7 @@
 {
-  "name": "Copy of Izy Botanic: Plant Care Assistant",
+  "name": "Izy Botanic ~ Plant Care Assistant v4",
   "description": "An intelligent plant care assistant that uses AI to diagnose plant health from images, providing detailed care instructions and tips.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "camera"
+  ]
 }
