@@ -1,90 +1,11 @@
-import { GoogleGenAI, Type, Content } from "@google/genai";
 import type { PlantDiagnosis, PlantRecommendation, ChatMessage, ReanalysisResponse } from '../types';
 
 if (!process.env.API_KEY) {
     console.warn("API_KEY environment variable not set. Using a mock service.");
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "mock-key" });
-
-const pestAndDiseaseSchema = {
-    type: Type.OBJECT,
-    description: "Análise de pragas e doenças, se detectadas. Omitir se a planta estiver livre de pragas/doenças.",
-    properties: {
-        title: { type: Type.STRING, description: "Um título curto para o problema (ex: 'Infestação de Cochonilhas')." },
-        description: { type: Type.STRING, description: "Uma descrição detalhada da praga ou doença encontrada." },
-        suggestedTreatment: { type: Type.STRING, description: "Um plano de tratamento sugerido para resolver o problema." },
-    },
-    required: ["title", "description", "suggestedTreatment"],
-};
-
-const plantAnalysisSchema = {
-    type: Type.OBJECT,
-    properties: {
-        speciesName: { type: Type.STRING, description: "O nome científico da planta." },
-        popularName: { type: Type.STRING, description: "O nome popular ou comum da planta em português do Brasil." },
-        identificationConfidence: { type: Type.STRING, enum: ['Alta', 'Média', 'Baixa'], description: "O nível de confiança na identificação da espécie (Alta, Média, Baixa)." },
-        alternativeSpecies: {
-            type: Type.ARRAY,
-            description: "Uma ou duas espécies alternativas se a confiança não for 'Alta'. Omitir se a confiança for 'Alta'.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    speciesName: { type: Type.STRING, description: "Nome científico da espécie alternativa." },
-                    popularName: { type: Type.STRING, description: "Nome popular da espécie alternativa." },
-                    reason: { type: Type.STRING, description: "Motivo pelo qual esta pode ser a planta (ex: 'Folhas muito similares, mas a floração é diferente')." }
-                },
-                required: ["speciesName", "popularName", "reason"]
-            }
-        },
-        isHealthy: { type: Type.BOOLEAN, description: "Um booleano simples indicando se a planta está geralmente saudável." },
-        diagnosis: {
-            type: Type.OBJECT,
-            properties: {
-                title: { type: Type.STRING, description: "Um título curto para o diagnóstico (ex: 'Sinais de Excesso de Água')." },
-                description: { type: Type.STRING, description: "Uma descrição detalhada dos problemas de saúde encontrados." }
-            },
-             required: ["title", "description"]
-        },
-        careInstructions: {
-            type: Type.OBJECT,
-            properties: {
-                watering: { type: Type.STRING, description: "Instruções específicas de rega." },
-                sunlight: { type: Type.STRING, description: "Requisitos de luz solar (ex: 'luz solar direta', 'sombra parcial')." },
-                soil: { type: Type.STRING, description: "Tipo de solo recomendado." },
-                fertilizer: { type: Type.STRING, description: "Recomendações de fertilização." }
-            },
-            required: ["watering", "sunlight", "soil", "fertilizer"]
-        },
-        careSchedule: {
-            type: Type.OBJECT,
-            description: "Um cronograma de cuidados estruturado para alertas.",
-            properties: {
-                wateringFrequency: { type: Type.INTEGER, description: "Frequência de rega em número de dias (ex: 7)." },
-                fertilizingFrequency: { type: Type.INTEGER, description: "Frequência de fertilização em dias (ex: 30). Use 0 se não for aplicável." },
-                pruningSchedule: { type: Type.STRING, description: "Instruções textuais sobre a poda (ex: 'Podar no início da primavera')."}
-            },
-            required: ["wateringFrequency", "fertilizingFrequency", "pruningSchedule"]
-        },
-        generalTips: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "Uma lista de dicas gerais para o bem-estar da planta."
-        },
-        pestAndDiseaseAnalysis: pestAndDiseaseSchema,
-    },
-    required: ["speciesName", "popularName", "identificationConfidence", "isHealthy", "diagnosis", "careInstructions", "careSchedule", "generalTips"]
-};
-
-const reanalysisSchema = {
-    type: Type.OBJECT,
-    properties: {
-        isSuggestionAccepted: { type: Type.BOOLEAN, description: "Indica se a sugestão do usuário para a espécie da planta é plausível e foi aceita." },
-        reasoning: { type: Type.STRING, description: "Uma breve explicação sobre por que a sugestão foi aceita ou rejeitada, comparando as características visuais da imagem com a espécie sugerida." },
-        newAnalysis: plantAnalysisSchema, // Reutiliza o schema existente se a sugestão for aceita.
-    },
-    required: ["isSuggestionAccepted", "reasoning"]
-};
+// Este arquivo foi modificado para remover dependências do Google Gemini
+// Todas as funções foram redirecionadas para usar o serviço OpenRouter
 
 const mockAnalysis: PlantDiagnosis = {
     speciesName: "Ficus lyrata",
@@ -145,17 +66,11 @@ export const analyzePlantImage = async (base64Image: string): Promise<PlantDiagn
         `
     };
 
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [imagePart, textPart] },
-            config: { responseMimeType: 'application/json', responseSchema: plantAnalysisSchema }
-        });
-        return JSON.parse(response.text) as PlantDiagnosis;
-    } catch (error) {
-        console.error("Error analyzing plant image with Gemini API:", error);
-        return mockAnalysis;
-    }
+    // Redirecionando para o serviço OpenRouter
+    console.warn("Gemini service deprecated. Redirecting to OpenRouter service.");
+    // Importar dinamicamente para evitar dependência circular
+    const { analyzePlantImage: openRouterAnalyze } = await import('./openRouterService');
+    return openRouterAnalyze(base64Image);
 };
 
 const mockReanalysis: ReanalysisResponse = {
@@ -201,33 +116,11 @@ export const reanalyzePlantImage = async (base64Image: string, userSuggestion: s
         `
     };
 
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [imagePart, textPart] },
-            config: { responseMimeType: 'application/json', responseSchema: reanalysisSchema }
-        });
-        return JSON.parse(response.text) as ReanalysisResponse;
-    } catch (error) {
-        console.error("Error re-analyzing plant image with Gemini API:", error);
-        return {
-            isSuggestionAccepted: false,
-            reasoning: "Ocorreu um erro ao tentar reanalisar a imagem. Por favor, tente novamente mais tarde."
-        };
-    }
-};
-
-const recommendationSchema = {
-    type: Type.ARRAY,
-    items: {
-        type: Type.OBJECT,
-        properties: {
-            popularName: { type: Type.STRING, description: "Nome popular da planta recomendada." },
-            speciesName: { type: Type.STRING, description: "Nome científico da planta recomendada." },
-            reason: { type: Type.STRING, description: "Breve motivo pelo qual esta planta é uma boa recomendação." }
-        },
-        required: ["popularName", "speciesName", "reason"]
-    }
+    // Redirecionando para o serviço OpenRouter
+    console.warn("Gemini service deprecated. Redirecting to OpenRouter service.");
+    // Importar dinamicamente para evitar dependência circular
+    const { reanalyzePlantImage: openRouterReanalyze } = await import('./openRouterService');
+    return openRouterReanalyze(base64Image, userSuggestion);
 };
 
 const mockRecommendations: PlantRecommendation[] = [
@@ -237,57 +130,17 @@ const mockRecommendations: PlantRecommendation[] = [
 ];
 
 export const getPlantRecommendations = async (plantNames: string[]): Promise<PlantRecommendation[]> => {
-     if (!process.env.API_KEY || process.env.API_KEY === "mock-key") {
-        return new Promise(resolve => setTimeout(() => resolve(mockRecommendations), 1500));
-    }
-
-    const textPart = {
-        text: `
-        Com base na seguinte lista de plantas que um usuário já possui: [${plantNames.join(', ')}].
-        Recomende 3 outras plantas que provavelmente prosperariam em condições de cuidado semelhantes.
-        Para cada recomendação, forneça o nome popular, nome científico e um breve motivo (1-2 frases).
-        Responda estritamente no formato JSON definido pelo schema. A língua da resposta deve ser português do Brasil.
-        `
-    };
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [textPart] },
-            config: { responseMimeType: 'application/json', responseSchema: recommendationSchema }
-        });
-        return JSON.parse(response.text) as PlantRecommendation[];
-    } catch (error) {
-        console.error("Error getting recommendations with Gemini API:", error);
-        return mockRecommendations;
-    }
+    // Redirecionando para o serviço OpenRouter
+    console.warn("Gemini service deprecated. Redirecting to OpenRouter service.");
+    // Importar dinamicamente para evitar dependência circular
+    const { getPlantRecommendations: openRouterRecommendations } = await import('./openRouterService');
+    return openRouterRecommendations(plantNames);
 };
 
 export const getExpertAnswer = async (newMessage: string, history: ChatMessage[]): Promise<string> => {
-    if (!process.env.API_KEY || process.env.API_KEY === "mock-key") {
-        return new Promise(resolve => setTimeout(() => resolve("Claro! Para podar roseiras, o ideal é fazer isso no final do inverno, antes que os novos brotos comecem a surgir. Isso incentiva um crescimento mais forte na primavera. Remova todos os galhos mortos, doentes ou fracos. Em seguida, encurte os galhos restantes, deixando de 3 a 5 gemas em cada um. Faça cortes em um ângulo de 45 graus, a cerca de 1 cm acima de uma gema que aponte para fora da planta. Isso ajuda a água a escorrer e direciona o novo crescimento para fora, melhorando a circulação de ar. O que mais você gostaria de saber?"), 2000));
-    }
-
-    const systemInstruction = "Você é 'Izy', um botânico especialista em jardinagem, amigável e experiente. Seu objetivo é fornecer conselhos claros, úteis e encorajadores aos usuários sobre suas plantas. Responda às perguntas deles de forma precisa e em tom de conversa. Use o português do Brasil.";
-
-    const geminiHistory: Content[] = history.map(msg => ({
-        role: msg.role,
-        parts: [{ text: msg.text }]
-    }));
-
-    const contents: Content[] = [...geminiHistory, { role: 'user', parts: [{ text: newMessage }] }];
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: contents,
-            config: {
-                systemInstruction: systemInstruction,
-            }
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Error getting expert answer from Gemini API:", error);
-        return "Desculpe, estou com um pouco de dificuldade para me conectar com meus conhecimentos botânicos agora. Poderia tentar fazer sua pergunta novamente em alguns instantes?";
-    }
+    // Redirecionando para o serviço OpenRouter
+    console.warn("Gemini service deprecated. Redirecting to OpenRouter service.");
+    // Importar dinamicamente para evitar dependência circular
+    const { getExpertAnswer: openRouterExpertAnswer } = await import('./openRouterService');
+    return openRouterExpertAnswer(newMessage, history);
 };

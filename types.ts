@@ -127,6 +127,7 @@ export interface UserAppData {
 export interface AppContextType {
   isAuthenticated: boolean;
   currentUser: string | null; // email
+  userId: string | null;
   appData: UserAppData;
   alerts: CareAlert[];
   isExpertLoading: boolean;
@@ -145,7 +146,7 @@ export interface AppContextType {
   updateCustomTask: (plantId: string, taskId: string, updates: Partial<Omit<CustomCareTask, 'id'>>) => void;
   removeCustomTask: (plantId: string, taskId: string) => void;
   sendChatMessage: (message: string) => Promise<void>;
-  activateCarePlan: (plantId: string, planId: keyof typeof import('../App').CARE_PLANS_CONFIG) => void;
+  activateCarePlan: (plantId: string, planId: 'NEW_PLANT_ACCLIMATIZATION' | 'RECOVERY_PLAN') => void;
   cancelCarePlan: (plantId: string) => void;
   updatePlantIdentification: (plantId: string, userSuggestion: string) => Promise<{ success: boolean; message: string; }>;
   apiConfig: import('./services/openRouterService').APIConfig;

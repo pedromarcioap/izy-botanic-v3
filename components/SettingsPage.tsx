@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LeafIcon, SaveIcon, BellIcon, SparklesIcon } from './Icons';
 import type { APIConfig } from '../services/openRouterService';
+import { supabaseUsers, supabaseAuth } from '../services/supabaseService';
+import { AppContext } from '../App';
 
 interface SettingsData {
   apiConfig: APIConfig;
@@ -51,19 +53,26 @@ const SettingsPage: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const appContext = useContext(AppContext);
+  const userId = appContext?.userId;
 
   // Carregar configurações salvas
   useEffect(() => {
-    const savedSettings = localStorage.getItem('izy-botanic-settings');
-    if (savedSettings) {
-      try {
-        const parsed = JSON.parse(savedSettings);
-        setSettings({ ...defaultSettings, ...parsed });
-      } catch (error) {
-        console.error('Error loading settings:', error);
+    const loadSettings = async () => {
+      if (userId) {
+        try {
+          const settings = await supabaseUsers.getUserSettings(userId);
+          if (settings) {
+            setSettings({ ...defaultSettings, ...settings });
+          }
+        } catch (error) {
+          console.error('Error loading settings:', error);
+        }
       }
-    }
-  }, []);
+    };
+    
+    loadSettings();
+  }, [userId]);
 
   const handleInputChange = (section: keyof SettingsData, field: string, value: any) => {
     setSettings(prev => ({

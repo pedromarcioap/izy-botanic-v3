@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation, useParams, Link } from 'react-router-dom';
 import type { Plant, HistoryEntry, PlantDiagnosis, PlantRecommendation, Achievement, CareAlert, CareSchedule, CustomCareTask, ChatMessage, PredefinedTaskType, UserProfile, UserAppData, ActiveCarePlan } from './types';
 import { analyzePlantImage, getPlantRecommendations, getExpertAnswer, reanalyzePlantImage, APIConfig } from './services/openRouterService';
+import { supabaseAuth, supabaseUsers, supabasePlants, supabaseChat, getUserAppData, saveUserAppData } from './services/supabaseService';
 import { LeafIcon, LogoutIcon, ArrowLeftIcon, PlusIcon, SunIcon, WaterDropIcon, SproutIcon, CheckCircleIcon, BugIcon, CalendarIcon, PencilIcon, TrophyIcon, SparklesIcon, CameraIcon, RocketIcon, BellIcon, ScissorsIcon, EditIcon, TrashIcon, UsersIcon, RotateIcon, CleanLeafIcon, SprayIcon, RepotIcon } from './components/Icons';
 import SettingsPage from './components/SettingsPage';
 
@@ -140,12 +141,13 @@ export const CARE_PLANS_CONFIG = {
   }
 };
 
-const getInitialAppData = (): Omit<UserAppData, 'userProfile'> => ({
+const getInitialAppData = (): UserAppData => ({
     plants: [],
     unlockedAchievements: new Set(),
     chatHistory: [
         { id: 'init', role: 'model', text: 'Olá! Eu sou Izy, sua especialista em botânica. Como posso ajudar seu jardim hoje?' }
     ],
+    userProfile: { name: 'Visitante', growthPoints: 0, level: 0 }
 });
 
 // A pure function to calculate the new state of achievements.
@@ -171,32 +173,58 @@ const getUpdatedAchievements = (
 };
 
 // --- CONTEXT ---
-const AppContext = React.createContext<import('./types').AppContextType | null>(null);
+export const AppContext = React.createContext<import('./types').AppContextType | null>(null);
 
 const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!localStorage.getItem('izyBotanic-currentUser'));
-    const [currentUser, setCurrentUser] = useState<string | null>(() => localStorage.getItem('izyBotanic-currentUser'));
+    const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+    const [currentUser, setCurrentUser] = useState<string | null>(null);
+    const [userId, setUserId] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState<boolean>(true);
     
-    const [appData, setAppData] = useState<UserAppData>(() => {
-        const user = localStorage.getItem('izyBotanic-currentUser');
-        if (user) {
-            const savedData = localStorage.getItem(`izyBotanic-appData-${user}`);
-            const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
-            const userData = users[user];
-            const userProfile: UserProfile | null = userData ? { name: userData.name, growthPoints: userData.growthPoints || 0, level: userData.level || 1 } : null;
+    const [appData, setAppData] = useState<UserAppData>(() => getInitialAppData());
 
-            if (savedData) {
-                const parsedData = JSON.parse(savedData);
-                return {
-                    ...parsedData,
-                    unlockedAchievements: new Set(parsedData.unlockedAchievements || []),
-                    userProfile,
-                };
+    // Verificar estado de autenticação ao carregar
+    useEffect(() => {
+        const checkAuthState = async () => {
+            try {
+                const user = await supabaseAuth.getCurrentUser();
+                
+                if (user) {
+                    setCurrentUser(user.email);
+                    setUserId(user.id);
+                    setIsAuthenticated(true);
+                    
+                    // Carregar dados do usuário
+                    const userData = await getUserAppData(user.id);
+                    setAppData(userData);
+                }
+            } catch (error) {
+                console.error('Error checking auth state:', error);
+            } finally {
+                setIsLoading(false);
             }
-             return { ...getInitialAppData(), userProfile };
-        }
-        return { ...getInitialAppData(), userProfile: null };
-    });
+        };
+        
+        checkAuthState();
+        
+        // Escutar mudanças no estado de autenticação
+        const { data: { subscription } } = supabaseAuth.onAuthStateChange((user) => {
+            if (user) {
+                setCurrentUser(user.email);
+                setUserId(user.id);
+                setIsAuthenticated(true);
+            } else {
+                setCurrentUser(null);
+                setUserId(null);
+                setIsAuthenticated(false);
+                setAppData(getInitialAppData());
+            }
+        });
+        
+        return () => {
+            subscription.unsubscribe();
+        };
+    }, []);
 
     // Carregar configurações da API
     const [apiConfig, setApiConfig] = useState<APIConfig>(() => {
@@ -224,218 +252,378 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     
     const userProfile = useMemo(() => appData.userProfile, [appData.userProfile]);
     
-    // Persist user data on change
-    useEffect(() => {
-        if (currentUser && appData) {
-            const dataToSave = {
-                ...appData,
-                unlockedAchievements: Array.from(appData.unlockedAchievements),
-                userProfile: undefined, // Don't save profile in app data blob
-            };
-            localStorage.setItem(`izyBotanic-appData-${currentUser}`, JSON.stringify(dataToSave));
-            
-            // Save user profile data separately in the users blob
-            const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
-            if (users[currentUser] && appData.userProfile) {
-                users[currentUser] = { ...users[currentUser], ...appData.userProfile };
-                localStorage.setItem('izyBotanic-users', JSON.stringify(users));
-            }
-        }
-    }, [appData, currentUser]);
     
-    const addGrowthPoints = useCallback((points: number) => {
-        setAppData(prev => {
-            if (!prev.userProfile) return prev;
-            const newPoints = prev.userProfile.growthPoints + points;
-            const newLevel = Math.floor(newPoints / POINTS_PER_LEVEL) + 1;
-            const updatedProfile = { ...prev.userProfile, growthPoints: newPoints, level: newLevel };
-            return { ...prev, userProfile: updatedProfile };
-        });
-    }, []);
+    const addGrowthPoints = useCallback(async (points: number) => {
+        if (!currentUser) return;
+        
+        try {
+            await supabaseUsers.addGrowthPoints(currentUser, points);
+            
+            // Atualizar o estado local com os novos dados
+            const profile = await supabaseUsers.getProfile(currentUser);
+            setAppData(prev => ({
+                ...prev,
+                userProfile: {
+                    name: profile.name,
+                    growthPoints: profile.growth_points || 0,
+                    level: profile.level || 1
+                }
+            }));
+        } catch (error) {
+            console.error("Error adding growth points:", error);
+            throw error;
+        }
+    }, [currentUser]);
 
     const login = useCallback(async (email: string, password: string): Promise<boolean> => {
-        const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
-        const user = users[email];
-        
-        if (user && user.password === hashPassword(password)) {
-            const savedData = localStorage.getItem(`izyBotanic-appData-${email}`);
-            const userProfile = { name: user.name, growthPoints: user.growthPoints || 0, level: user.level || 1 };
-            if (savedData) {
-                const parsedData = JSON.parse(savedData);
-                setAppData({
-                    ...parsedData,
-                    unlockedAchievements: new Set(parsedData.unlockedAchievements || []),
-                    userProfile,
-                });
-            } else {
-                setAppData({ ...getInitialAppData(), userProfile });
+        setIsLoading(true);
+        try {
+            const data = await supabaseAuth.signIn(email, password);
+            
+            if (data.user) {
+                setCurrentUser(data.user.email);
+                setUserId(data.user.id);
+                setIsAuthenticated(true);
+                
+                // Carregar dados do usuário
+                const userData = await getUserAppData(data.user.id);
+                setAppData(userData);
+                
+                return true;
             }
             
-            localStorage.setItem('izyBotanic-currentUser', email);
-            setCurrentUser(email);
-            setIsAuthenticated(true);
-            return true;
+            throw new Error("Credenciais inválidas.");
+        } catch (error) {
+            console.error("Login error:", error);
+            throw error;
+        } finally {
+            setIsLoading(false);
         }
-        throw new Error("Credenciais inválidas.");
     }, []);
 
     const signup = useCallback(async (name: string, email: string, password: string): Promise<boolean> => {
-        const users = JSON.parse(localStorage.getItem('izyBotanic-users') || '{}');
-        if (users[email]) {
-            throw new Error("Usuário já existe.");
+        setIsLoading(true);
+        try {
+            const data = await supabaseAuth.signUp(name, email, password);
+            
+            if (data.user) {
+                setCurrentUser(data.user.email);
+                setUserId(data.user.id);
+                setIsAuthenticated(true);
+                
+                // Criar dados iniciais para o novo usuário
+                const initialData = {
+                    ...getInitialAppData(),
+                    userProfile: { name, growthPoints: 0, level: 1 }
+                };
+                setAppData(initialData);
+                
+                return true;
+            }
+            
+            throw new Error("Erro ao criar conta.");
+        } catch (error) {
+            console.error("Signup error:", error);
+            throw error;
+        } finally {
+            setIsLoading(false);
         }
+    }, []);
+
+    const logout = useCallback(async () => {
+        try {
+            await supabaseAuth.signOut();
+        } catch (error) {
+            console.error("Logout error:", error);
+        } finally {
+            setCurrentUser(null);
+            setUserId(null);
+            setIsAuthenticated(false);
+            setAppData(getInitialAppData());
+        }
+    }, []);
+
+    const addPlant = useCallback(async (plant: Plant) => {
+        if (!currentUser) return;
         
-        const userProfile = { name, growthPoints: 0, level: 1 };
-        users[email] = { ...userProfile, password: hashPassword(password) };
-        localStorage.setItem('izyBotanic-users', JSON.stringify(users));
+        try {
+            const newPlant = await supabasePlants.addPlant(currentUser, plant);
+            
+            setAppData(prev => {
+                const newPlants = [...prev.plants, newPlant];
+                const newAchievements = getUpdatedAchievements(prev.unlockedAchievements, newPlants);
+                return { ...prev, plants: newPlants, unlockedAchievements: newAchievements };
+            });
+            
+            // Adicionar pontos de crescimento
+            await supabaseUsers.addGrowthPoints(currentUser, POINTS_CONFIG.ADD_PLANT);
+        } catch (error) {
+            console.error("Error adding plant:", error);
+            throw error;
+        }
+    }, [currentUser]);
 
-        setAppData({ ...getInitialAppData(), userProfile });
-        localStorage.setItem('izyBotanic-currentUser', email);
-        setCurrentUser(email);
-        setIsAuthenticated(true);
-        return true;
-    }, []);
-
-    const logout = useCallback(() => {
-        localStorage.removeItem('izyBotanic-currentUser');
-        setCurrentUser(null);
-        setIsAuthenticated(false);
-        setAppData({ ...getInitialAppData(), userProfile: null });
-    }, []);
-
-    const addPlant = useCallback((plant: Plant) => {
-        setAppData(prev => {
-            const newPlants = [...prev.plants, plant];
-            const newAchievements = getUpdatedAchievements(prev.unlockedAchievements, newPlants);
-            return { ...prev, plants: newPlants, unlockedAchievements: newAchievements };
-        });
-        addGrowthPoints(POINTS_CONFIG.ADD_PLANT);
-    }, [addGrowthPoints]);
-
-    const deletePlant = useCallback((plantId: string) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.filter(p => p.id !== plantId)
-        }));
-    }, []);
+    const deletePlant = useCallback(async (plantId: string) => {
+        if (!currentUser) return;
+        
+        try {
+            await supabasePlants.deletePlant(plantId);
+            
+            setAppData(prev => ({
+                ...prev,
+                plants: prev.plants.filter(p => p.id !== plantId)
+            }));
+        } catch (error) {
+            console.error("Error deleting plant:", error);
+            throw error;
+        }
+    }, [currentUser]);
 
     const getPlantById = useCallback((id: string) => appData.plants.find(p => p.id === id), [appData.plants]);
 
-    const addHistoryEntry = useCallback((plantId: string, note: string, image?: string) => {
-        setAppData(prev => {
-            const newPlants = prev.plants.map(plant => {
-                if (plant.id === plantId) {
-                    const newHistoryEntry: HistoryEntry = {
-                        id: `${new Date().toISOString()}-${Math.random()}`,
-                        date: new Date().toISOString(),
-                        note,
-                        image,
-                    };
-                    return { ...plant, history: [newHistoryEntry, ...(plant.history || [])] };
-                }
-                return plant;
+    const addHistoryEntry = useCallback(async (plantId: string, note: string, image?: string) => {
+        if (!currentUser) return;
+        
+        try {
+            const newHistoryEntry: HistoryEntry = {
+                id: `${new Date().toISOString()}-${Math.random()}`,
+                date: new Date().toISOString(),
+                note,
+                image,
+            };
+            
+            await supabasePlants.addHistoryEntry(plantId, newHistoryEntry);
+            
+            setAppData(prev => {
+                const newPlants = prev.plants.map(plant => {
+                    if (plant.id === plantId) {
+                        return { ...plant, history: [newHistoryEntry, ...(plant.history || [])] };
+                    }
+                    return plant;
+                });
+                const newAchievements = getUpdatedAchievements(prev.unlockedAchievements, newPlants, { newHistoryNote: true });
+                return { ...prev, plants: newPlants, unlockedAchievements: newAchievements };
             });
-            const newAchievements = getUpdatedAchievements(prev.unlockedAchievements, newPlants, { newHistoryNote: true });
-            return { ...prev, plants: newPlants, unlockedAchievements: newAchievements };
-        });
-        addGrowthPoints(POINTS_CONFIG.ADD_HISTORY);
-    }, [addGrowthPoints]);
+            
+            // Adicionar pontos de crescimento
+            await supabaseUsers.addGrowthPoints(currentUser, POINTS_CONFIG.ADD_HISTORY);
+        } catch (error) {
+            console.error("Error adding history entry:", error);
+            throw error;
+        }
+    }, [currentUser]);
 
     const getRecommendations = useCallback(async (): Promise<PlantRecommendation[]> => {
         const plantNames = appData.plants.map(p => p.analysis.popularName);
         return await getPlantRecommendations(plantNames, apiConfig);
     }, [appData.plants, apiConfig]);
 
-    const completeCareTask = useCallback((plantId: string, taskType: 'watering' | 'fertilizing' | 'custom', customTaskId?: string) => {
-        setAppData(prev => {
-            const plantToUpdate = prev.plants.find(p => p.id === plantId);
-            const wasUnhealthy = plantToUpdate && !plantToUpdate.analysis.isHealthy;
-
-            const newPlants = prev.plants.map(p => {
-                if (p.id === plantId) {
-                    if (taskType === 'custom' && customTaskId) {
-                        return { ...p, customTasks: p.customTasks.map(t => t.id === customTaskId ? { ...t, lastCompleted: new Date().toISOString() } : t) };
-                    }
-                    if (taskType === 'watering' || taskType === 'fertilizing') {
-                        return { ...p, lastCare: { ...p.lastCare, [taskType]: new Date().toISOString() } };
-                    }
-                }
-                return p;
-            });
-
-            let newAchievements = prev.unlockedAchievements;
-            if (wasUnhealthy && !newAchievements.has('PLANT_SAVIOR')) {
-                newAchievements = new Set(prev.unlockedAchievements);
-                newAchievements.add('PLANT_SAVIOR');
+    const completeCareTask = useCallback(async (plantId: string, taskType: 'watering' | 'fertilizing' | 'custom', customTaskId?: string) => {
+        if (!currentUser) return;
+        
+        try {
+            // Atualizar a planta no banco de dados
+            const updates: any = {};
+            
+            if (taskType === 'custom' && customTaskId) {
+                updates.customTasks = appData.plants.find(p => p.id === plantId)?.customTasks?.map(t =>
+                    t.id === customTaskId ? { ...t, lastCompleted: new Date().toISOString() } : t
+                );
+            } else if (taskType === 'watering' || taskType === 'fertilizing') {
+                updates.lastCare = { ...appData.plants.find(p => p.id === plantId)?.lastCare, [taskType]: new Date().toISOString() };
             }
+            
+            await supabasePlants.updatePlant(plantId, updates);
+            
+            // Atualizar o estado local
+            setAppData(prev => {
+                const plantToUpdate = prev.plants.find(p => p.id === plantId);
+                const wasUnhealthy = plantToUpdate && !plantToUpdate.analysis.isHealthy;
 
-            return {
-                ...prev,
-                plants: newPlants,
-                unlockedAchievements: newAchievements,
-            };
-        });
-        addGrowthPoints(POINTS_CONFIG.COMPLETE_TASK);
-    }, [addGrowthPoints]);
+                const newPlants = prev.plants.map(p => {
+                    if (p.id === plantId) {
+                        return { ...p, ...updates };
+                    }
+                    return p;
+                });
 
-    const updatePlantCareSchedule = useCallback((plantId: string, newSchedule: Partial<CareSchedule>) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.map(p => p.id === plantId ? { ...p, analysis: { ...p.analysis, careSchedule: { ...p.analysis.careSchedule, ...newSchedule } } } : p)
-        }));
-    }, []);
-
-    const addCustomTask = useCallback((plantId: string, taskData: Omit<CustomCareTask, 'id' | 'lastCompleted'>) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.map(p => {
-                if (p.id === plantId) {
-                    const newTask: CustomCareTask = { ...taskData, id: new Date().toISOString(), lastCompleted: new Date().toISOString() };
-                    return { ...p, customTasks: [...(p.customTasks || []), newTask] };
+                let newAchievements = prev.unlockedAchievements;
+                if (wasUnhealthy && !newAchievements.has('PLANT_SAVIOR')) {
+                    newAchievements = new Set(prev.unlockedAchievements);
+                    newAchievements.add('PLANT_SAVIOR');
                 }
-                return p;
-            })
-        }));
-    }, []);
 
-    const updateCustomTask = useCallback((plantId: string, taskId: string, updates: Partial<Omit<CustomCareTask, 'id'>>) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.map(p => p.id === plantId ? { ...p, customTasks: p.customTasks.map(t => t.id === taskId ? { ...t, ...updates } : t) } : p)
-        }));
-    }, []);
+                return {
+                    ...prev,
+                    plants: newPlants,
+                    unlockedAchievements: newAchievements,
+                };
+            });
+            
+            // Adicionar pontos de crescimento
+            await supabaseUsers.addGrowthPoints(currentUser, POINTS_CONFIG.COMPLETE_TASK);
+        } catch (error) {
+            console.error("Error completing care task:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
 
-    const removeCustomTask = useCallback((plantId: string, taskId: string) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.map(p => p.id === plantId ? { ...p, customTasks: p.customTasks.filter(t => t.id !== taskId) } : p)
-        }));
-    }, []);
+    const updatePlantCareSchedule = useCallback(async (plantId: string, newSchedule: Partial<CareSchedule>) => {
+        if (!currentUser) return;
+        
+        try {
+            await supabasePlants.updatePlant(plantId, {
+                analysis: {
+                    ...appData.plants.find(p => p.id === plantId)?.analysis,
+                    careSchedule: { ...appData.plants.find(p => p.id === plantId)?.analysis.careSchedule, ...newSchedule }
+                }
+            });
+            
+            // Atualizar o estado local
+            setAppData(prev => ({
+                ...prev,
+                plants: prev.plants.map(p => p.id === plantId ? {
+                    ...p,
+                    analysis: {
+                        ...p.analysis,
+                        careSchedule: { ...p.analysis.careSchedule, ...newSchedule }
+                    }
+                } : p)
+            }));
+        } catch (error) {
+            console.error("Error updating plant care schedule:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
+
+    const addCustomTask = useCallback(async (plantId: string, taskData: Omit<CustomCareTask, 'id' | 'lastCompleted'>) => {
+        if (!currentUser) return;
+        
+        try {
+            const newTask: CustomCareTask = { ...taskData, id: new Date().toISOString(), lastCompleted: new Date().toISOString() };
+            
+            // Obter as tarefas atuais
+            const plant = appData.plants.find(p => p.id === plantId);
+            const currentTasks = plant?.customTasks || [];
+            
+            // Atualizar no banco de dados
+            await supabasePlants.updatePlant(plantId, {
+                customTasks: [...currentTasks, newTask]
+            });
+            
+            // Atualizar o estado local
+            setAppData(prev => ({
+                ...prev,
+                plants: prev.plants.map(p => {
+                    if (p.id === plantId) {
+                        return { ...p, customTasks: [...(p.customTasks || []), newTask] };
+                    }
+                    return p;
+                })
+            }));
+        } catch (error) {
+            console.error("Error adding custom task:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
+
+    const updateCustomTask = useCallback(async (plantId: string, taskId: string, updates: Partial<Omit<CustomCareTask, 'id'>>) => {
+        if (!currentUser) return;
+        
+        try {
+            // Obter as tarefas atuais
+            const plant = appData.plants.find(p => p.id === plantId);
+            const currentTasks = plant?.customTasks || [];
+            
+            // Atualizar no banco de dados
+            await supabasePlants.updatePlant(plantId, {
+                customTasks: currentTasks.map(t => t.id === taskId ? { ...t, ...updates } : t)
+            });
+            
+            // Atualizar o estado local
+            setAppData(prev => ({
+                ...prev,
+                plants: prev.plants.map(p => p.id === plantId ? {
+                    ...p,
+                    customTasks: p.customTasks.map(t => t.id === taskId ? { ...t, ...updates } : t)
+                } : p)
+            }));
+        } catch (error) {
+            console.error("Error updating custom task:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
+
+    const removeCustomTask = useCallback(async (plantId: string, taskId: string) => {
+        if (!currentUser) return;
+        
+        try {
+            // Obter as tarefas atuais
+            const plant = appData.plants.find(p => p.id === plantId);
+            const currentTasks = plant?.customTasks || [];
+            
+            // Atualizar no banco de dados
+            await supabasePlants.updatePlant(plantId, {
+                customTasks: currentTasks.filter(t => t.id !== taskId)
+            });
+            
+            // Atualizar o estado local
+            setAppData(prev => ({
+                ...prev,
+                plants: prev.plants.map(p => p.id === plantId ? {
+                    ...p,
+                    customTasks: p.customTasks.filter(t => t.id !== taskId)
+                } : p)
+            }));
+        } catch (error) {
+            console.error("Error removing custom task:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
 
     const sendChatMessage = useCallback(async (message: string) => {
+        if (!currentUser) return;
+        
         setIsExpertLoading(true);
         const userMessage: ChatMessage = { id: new Date().toISOString(), role: 'user', text: message };
         
-        const currentHistory = [...appData.chatHistory, userMessage];
-        setAppData(prev => ({...prev, chatHistory: currentHistory }));
-
         try {
+            // Adicionar mensagem do usuário ao banco de dados
+            await supabaseChat.addChatMessage(currentUser, userMessage);
+            
+            // Atualizar o histórico local
+            const currentHistory = [...appData.chatHistory, userMessage];
+            setAppData(prev => ({...prev, chatHistory: currentHistory }));
+
+            // Obter resposta da IA
             const responseText = await getExpertAnswer(message, currentHistory.slice(0, -1), apiConfig);
             const modelMessage: ChatMessage = { id: new Date().toISOString() + '-ai', role: 'model', text: responseText };
+            
+            // Adicionar resposta da IA ao banco de dados
+            await supabaseChat.addChatMessage(currentUser, modelMessage);
+            
+            // Atualizar o histórico local com a resposta
             setAppData(prev => ({ ...prev, chatHistory: [...prev.chatHistory, modelMessage] }));
         } catch (error) {
-            console.error(error);
+            console.error("Error in chat:", error);
+            
+            // Adicionar mensagem de erro ao banco de dados
             const errorMessage: ChatMessage = { id: new Date().toISOString() + '-err', role: 'model', text: 'Desculpe, ocorreu um erro. Tente novamente.' };
+            await supabaseChat.addChatMessage(currentUser, errorMessage);
+            
+            // Atualizar o histórico local com a mensagem de erro
             setAppData(prev => ({ ...prev, chatHistory: [...prev.chatHistory, errorMessage] }));
         } finally {
             setIsExpertLoading(false);
         }
-    }, [appData.chatHistory, apiConfig]);
+    }, [currentUser, appData.chatHistory, apiConfig]);
     
-    const activateCarePlan = useCallback((plantId: string, planId: keyof typeof CARE_PLANS_CONFIG) => {
-        setAppData(prev => {
+    const activateCarePlan = useCallback(async (plantId: string, planId: keyof typeof CARE_PLANS_CONFIG) => {
+        if (!currentUser) return;
+        
+        try {
             const planConfig = CARE_PLANS_CONFIG[planId];
-            if (!planConfig) return prev;
+            if (!planConfig) return;
 
             const startDate = new Date();
             const newTasks: CustomCareTask[] = [];
@@ -462,7 +650,18 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 taskIds: newTaskIds
             };
             
-            return {
+            // Obter as tarefas atuais
+            const plant = appData.plants.find(p => p.id === plantId);
+            const currentTasks = plant?.customTasks || [];
+            
+            // Atualizar no banco de dados
+            await supabasePlants.updatePlant(plantId, {
+                customTasks: [...currentTasks, ...newTasks],
+                activeCarePlan: newActivePlan
+            });
+            
+            // Atualizar o estado local
+            setAppData(prev => ({
                 ...prev,
                 plants: prev.plants.map(p => {
                     if (p.id === plantId) {
@@ -474,27 +673,51 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     }
                     return p;
                 })
-            };
-        });
-        addGrowthPoints(POINTS_CONFIG.ACTIVATE_PLAN);
-    }, [addGrowthPoints]);
+            }));
+            
+            // Adicionar pontos de crescimento
+            await supabaseUsers.addGrowthPoints(currentUser, POINTS_CONFIG.ACTIVATE_PLAN);
+        } catch (error) {
+            console.error("Error activating care plan:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
 
-    const cancelCarePlan = useCallback((plantId: string) => {
-        setAppData(prev => ({
-            ...prev,
-            plants: prev.plants.map(p => {
-                if (p.id === plantId && p.activeCarePlan) {
-                    const taskIdsToRemove = new Set(p.activeCarePlan.taskIds);
-                    return {
-                        ...p,
-                        customTasks: p.customTasks.filter(task => !taskIdsToRemove.has(task.id)),
-                        activeCarePlan: undefined,
-                    };
-                }
-                return p;
-            })
-        }));
-    }, []);
+    const cancelCarePlan = useCallback(async (plantId: string) => {
+        if (!currentUser) return;
+        
+        try {
+            // Obter a planta atual
+            const plant = appData.plants.find(p => p.id === plantId);
+            if (!plant?.activeCarePlan) return;
+            
+            const taskIdsToRemove = new Set(plant.activeCarePlan.taskIds);
+            
+            // Atualizar no banco de dados
+            await supabasePlants.updatePlant(plantId, {
+                customTasks: plant.customTasks.filter(task => !taskIdsToRemove.has(task.id)),
+                activeCarePlan: undefined
+            });
+            
+            // Atualizar o estado local
+            setAppData(prev => ({
+                ...prev,
+                plants: prev.plants.map(p => {
+                    if (p.id === plantId && p.activeCarePlan) {
+                        return {
+                            ...p,
+                            customTasks: p.customTasks.filter(task => !taskIdsToRemove.has(task.id)),
+                            activeCarePlan: undefined,
+                        };
+                    }
+                    return p;
+                })
+            }));
+        } catch (error) {
+            console.error("Error canceling care plan:", error);
+            throw error;
+        }
+    }, [currentUser, appData.plants]);
 
     const updatePlantIdentification = useCallback(async (plantId: string, userSuggestion: string): Promise<{ success: boolean; message: string; }> => {
         const plant = getPlantById(plantId);
@@ -506,10 +729,17 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             const result = await reanalyzePlantImage(plant.image, userSuggestion, apiConfig);
 
             if (result.isSuggestionAccepted && result.newAnalysis) {
+                // Atualizar no banco de dados
+                await supabasePlants.updatePlant(plantId, {
+                    analysis: result.newAnalysis
+                });
+                
+                // Atualizar o estado local
                 setAppData(prev => ({
                     ...prev,
                     plants: prev.plants.map(p => p.id === plantId ? { ...p, analysis: result.newAnalysis! } : p)
                 }));
+                
                 addHistoryEntry(plantId, `Identificação atualizada para ${result.newAnalysis.popularName}. ${result.reasoning}`);
                 return { success: true, message: 'Identificação atualizada com sucesso!' };
             } else {
@@ -567,13 +797,13 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }, [appData.plants]);
 
     const value = useMemo(() => ({
-        isAuthenticated, currentUser, appData, alerts, isExpertLoading, userProfile,
+        isAuthenticated, currentUser, userId, appData, alerts, isExpertLoading, userProfile,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
         removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification,
         apiConfig
     }), [
-        isAuthenticated, currentUser, appData, alerts, isExpertLoading, userProfile,
+        isAuthenticated, currentUser, userId, appData, alerts, isExpertLoading, userProfile,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
         removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification,
