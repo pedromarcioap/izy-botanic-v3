@@ -40,9 +40,6 @@ const defaultSettings: SettingsData = {
 const AVAILABLE_MODELS = [
   { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'Anthropic', description: 'Bom para análise detalhada e respostas complexas' },
   { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku', provider: 'Anthropic', description: 'Rápido e eficiente para tarefas simples' },
-  { id: 'openai/gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'OpenAI', description: 'Modelo poderoso com bom raciocínio' },
-  { id: 'google/gemini-pro', name: 'Gemini Pro', provider: 'Google', description: 'Bom para tarefas multimodais' },
-  { id: 'meta/llama-3.1-70b', name: 'Llama 3.1 70B', provider: 'Meta', description: 'Modelo de código aberto com bom desempenho' },
   { id: 'mistralai/mistral-7b', name: 'Mistral 7B', provider: 'Mistral AI', description: 'Leve e rápido para tarefas gerais' }
 ];
 
@@ -53,20 +50,25 @@ const SettingsPage: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const [loadingError, setLoadingError] = useState<string | null>(null);
   const appContext = useContext(AppContext);
   const userId = appContext?.userId;
+  const updateApiConfig = appContext?.updateApiConfig;
 
   // Carregar configurações salvas
   useEffect(() => {
     const loadSettings = async () => {
       if (userId) {
         try {
+          console.log("Loading settings for user:", userId);
           const settings = await supabaseUsers.getUserSettings(userId);
+          console.log("Loaded settings:", settings);
           if (settings) {
             setSettings({ ...defaultSettings, ...settings });
           }
         } catch (error) {
           console.error('Error loading settings:', error);
+          setLoadingError("Falha ao carregar as configurações. Tente recarregar a página.");
         }
       }
     };
@@ -85,16 +87,19 @@ const SettingsPage: React.FC = () => {
   };
 
   const handleSave = async () => {
+    if (!userId || !updateApiConfig) return;
     setIsLoading(true);
     setSaveStatus('saving');
     
     try {
-      // Simular salvamento
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      localStorage.setItem('izy-botanic-settings', JSON.stringify(settings));
+      console.log("Saving settings for user:", userId, "settings:", settings);
+      await supabaseUsers.saveUserSettings(userId, settings);
+      updateApiConfig(settings.apiConfig);
       setSaveStatus('success');
+      console.log("Settings saved successfully.");
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (error) {
+      console.error("Error saving settings:", error);
       setSaveStatus('error');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } finally {
@@ -127,10 +132,15 @@ const SettingsPage: React.FC = () => {
     }, 5000);
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
+    if (!userId) return;
     if (confirm('Tem certeza de que deseja redefinir todas as configurações para os valores padrão?')) {
-      setSettings(defaultSettings);
-      localStorage.removeItem('izy-botanic-settings');
+      try {
+        await supabaseUsers.saveUserSettings(userId, defaultSettings);
+        setSettings(defaultSettings);
+      } catch (error) {
+        console.error("Error resetting settings:", error);
+      }
     }
   };
 
@@ -149,6 +159,13 @@ const SettingsPage: React.FC = () => {
           </div>
           <p className="text-gray-600">Gerencie suas preferências, configurações de API e notificações.</p>
         </div>
+
+        {loadingError && (
+          <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6" role="alert">
+            <p className="font-bold">Erro</p>
+            <p>{loadingError}</p>
+          </div>
+        )}
 
         {/* API Configuration */}
         <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">

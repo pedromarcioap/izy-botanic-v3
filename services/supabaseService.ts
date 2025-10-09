@@ -122,7 +122,9 @@ export const supabaseUsers = {
       .eq('id', userId)
       .single();
     
-    if (error) throw error;
+    if (error) {
+        throw error;
+    }
     return data?.settings || null;
   },
   

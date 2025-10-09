@@ -197,6 +197,10 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     // Carregar dados do usuário
                     const userData = await getUserAppData(user.id);
                     setAppData(userData);
+                    const userSettings = await supabaseUsers.getUserSettings(user.id);
+                    if (userSettings) {
+                        setApiConfig(userSettings.apiConfig);
+                    }
                 }
             } catch (error) {
                 console.error('Error checking auth state:', error);
@@ -228,25 +232,16 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
     // Carregar configurações da API
     const [apiConfig, setApiConfig] = useState<APIConfig>(() => {
-        const savedSettings = localStorage.getItem('izy-botanic-settings');
-        if (savedSettings) {
-            try {
-                const parsed = JSON.parse(savedSettings);
-                return parsed.apiConfig || {
-                    apiKey: '',
-                    baseUrl: 'https://openrouter.ai/api/v1',
-                    model: 'anthropic/claude-3.5-sonnet'
-                };
-            } catch (error) {
-                console.error('Error loading API config:', error);
-            }
-        }
         return {
             apiKey: '',
             baseUrl: 'https://openrouter.ai/api/v1',
             model: 'anthropic/claude-3.5-sonnet'
         };
     });
+
+    const updateApiConfig = (newConfig: APIConfig) => {
+        setApiConfig(newConfig);
+    };
     
     const [isExpertLoading, setIsExpertLoading] = useState(false);
     
@@ -288,6 +283,10 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 // Carregar dados do usuário
                 const userData = await getUserAppData(data.user.id);
                 setAppData(userData);
+                const userSettings = await supabaseUsers.getUserSettings(data.user.id);
+                if (userSettings) {
+                    setApiConfig(userSettings.apiConfig);
+                }
                 
                 return true;
             }
@@ -801,13 +800,13 @@ const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
         removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification,
-        apiConfig
+        apiConfig, updateApiConfig
     }), [
         isAuthenticated, currentUser, userId, appData, alerts, isExpertLoading, userProfile,
         login, signup, logout, addPlant, deletePlant, getPlantById, addHistoryEntry, getRecommendations,
         completeCareTask, updatePlantCareSchedule, addCustomTask, updateCustomTask,
         removeCustomTask, sendChatMessage, activateCarePlan, cancelCarePlan, updatePlantIdentification,
-        apiConfig
+        apiConfig, updateApiConfig
     ]);
 
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
@@ -876,6 +875,7 @@ const AuthPage = () => {
                 )}
                 <input className="shadow appearance-none border rounded-lg w-full py-3 px-4 text-text-dark leading-tight focus:outline-none focus:shadow-outline" id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="seu@email.com" required />
                 <input className="shadow appearance-none border rounded-lg w-full py-3 px-4 text-text-dark leading-tight focus:outline-none focus:shadow-outline" id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="******************" required />
+                {!isLoginView && <p className="text-xs text-gray-500 mt-1">A senha deve conter pelo menos 8 caracteres, incluindo letras maiúsculas, minúsculas, números e símbolos.</p>}
                 
                  {error && <p className="text-red-500 text-sm text-center">{error}</p>}
 
@@ -1149,7 +1149,7 @@ const AnalyzePage = () => {
     const [analysisResult, setAnalysisResult] = useState<PlantDiagnosis | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const { addPlant } = useApp();
+    const { addPlant, apiConfig } = useApp();
     const navigate = useNavigate();
     const [isCameraOpen, setIsCameraOpen] = useState(false);
 
@@ -1172,7 +1172,7 @@ const AnalyzePage = () => {
         setError(null);
         setAnalysisResult(null);
         try {
-            const result = await analyzePlantImage(imageBase64);
+            const result = await analyzePlantImage(imageBase64, apiConfig);
             setAnalysisResult(result);
         } catch (err) {
             setError("Falha ao analisar a imagem. Tente novamente.");

@@ -150,4 +150,5 @@ export interface AppContextType {
   cancelCarePlan: (plantId: string) => void;
   updatePlantIdentification: (plantId: string, userSuggestion: string) => Promise<{ success: boolean; message: string; }>;
   apiConfig: import('./services/openRouterService').APIConfig;
+  updateApiConfig: (newConfig: import('./services/openRouterService').APIConfig) => void;
 }
